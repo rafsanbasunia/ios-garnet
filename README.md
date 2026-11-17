@@ -21,13 +21,15 @@ Status: November 2026.
 | GUI | SpringBoard, Settings, Safari and the stock apps |
 | Graphics | CoreAnimation drawn through Metal on the Adreno 710 at 940 MHz; home-screen page swipes 62-68 fps |
 | Touch | FocalTech FT3683G, multi-touch and system gestures |
-| Buttons | Power, volume up, volume down |
+| Buttons | Power, volume up, volume down (volume display, Control Center's volume slider) |
 | Wi-Fi | 2.4 and 5 GHz (up to 80 MHz), WPA2; scan and join from Settings, DHCP, DNS, Safari |
 | Battery | Level reading |
 
 ## What does not work (yet)
 
-- Cellular, Bluetooth, camera, sensors, GPS; audio is partial.
+- Cellular, Bluetooth, camera, sensors, GPS.
+- Audio: the system's audio server runs (volume keys and slider work), but the speakers are silent: garnet's audio
+  DSP speaks AudioReach (GPR), and that path is not written yet.
 - Wi-Fi: no WPA3; channels 12-14 off; on 5 GHz a network shows only once its access point has been heard.
 - Graphics: coloured blocks during fast page swipes (a tile seam in the GMEM path); Control Center at about 35-40 fps;
   120 Hz not reached.
@@ -155,7 +157,8 @@ Every argument: [docs/boot-args.md](docs/boot-args.md).
 | Wi-Fi | WPSS DSP start, GLINK/QRTR/QMI, supply rails, SMMU stream 0x4c0; Linux ath10k (snoc) linked into the kernel |
 | Wi-Fi glue | real interrupts (12 SPIs), receive poll thread, regulatory domain and transmit power, flow control |
 | Wi-Fi identity | stable radio address derived from the SoC serial number when none is given |
-| Images | `garnet-wifi-image.sh`: firmware plus the network daemons (configd, mDNSResponder, securityd, trustd, nsurlsessiond) |
+| Images | `garnet-wifi-image.sh`: firmware plus the network daemons (configd, mDNSResponder, securityd, trustd, nsurlsessiond) and the audio server (mediaserverd, with nanoregistryd, without which it hangs the boot) |
+| Debugging | `userland/src/stacks.c`: the threads of a running process and where each one waits (found the audio server's hang) |
 
 ## Key hardware facts
 

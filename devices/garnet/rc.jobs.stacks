@@ -1,0 +1,5 @@
+# Commands run by the launchd job com.redwood.demo (see com.redwood.demo.plist).
+/redwood/bin/hello_dyn started by launchd
+# --- where the audio server and the home screen are, once boot should be over (test only) ---
+/redwood/bin/rwtouch wait 50
+/redwood/bin/stacks mediaserverd SpringBoard

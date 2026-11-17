@@ -32,6 +32,8 @@ just not shown on the panel.
 - `-v`: verbose boot. The panel shows the kernel and system log instead of the Apple logo. Logging is the same either way. Options 3, 6, 9.
 - `garnet_touch=1` (K): start garnet's touch-screen driver (FocalTech) and say "this is garnet" to the button, speaker and cpufreq drivers. `0` or absent: no touch. All options.
 - `garnet_buttons=1` (K): power and volume buttons driver. `0` or absent: buttons are not read. All options.
+- `press_power=S` (K, test only): the kernel presses the power key S seconds after boot, and again 10 s later, as the key itself would. `press_key=1` presses volume up instead, `press_key=2` volume down (3 s apart); `press_count=N` makes it N presses; `press_power_ms=MS` is how long each is held (default 150). Not in any option.
+- `cs_relax_platform_task_ports=1` (K, debugging only): lets `userland/src/stacks.c` read the threads of system processes (a process that hangs). Not in any option.
 - `garnet_cpufreq=1` (K): CPU frequency scaling through garnet's EPSS (4 silver A55 + 4 gold A78 cores). `0` or absent: cores stay at the clocks the loader left. All options.
 - `bootcpu=N` (KL): the core the kernel starts on (0–7). `7` = a gold core, about 2.5 times faster than a silver one, while the loader keeps watching from another core. All options.
 - `cpus=N` (L): how many cores the kernel brings up (1–8). `8` = all of them. All options.

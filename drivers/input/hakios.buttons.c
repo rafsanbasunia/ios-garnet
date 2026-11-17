@@ -622,9 +622,16 @@ out:
  * boot-arg press_power=<seconds>: a short press of the power key that many seconds after boot, and another ten
  * seconds later, given to Darwin as the key's own are (hakios_touch_post): the lock, and the wake, tried with nobody
  * at the phone. press_power_ms=<ms> is how long each is held (default 150: a tap; 3000 and up is a long press).
+ * press_key=1 presses volume up instead, press_key=2 volume down; press_count=<n> makes it n presses, three seconds
+ * apart for the volume keys (the volume display, tried with nobody at the phone).
  */
-static uint32_t press_ms = 150, press_left;
+static uint32_t press_ms = 150, press_left, press_key, press_gap = 10;
 static thread_call_t press_call;
+static const struct {
+	const char *name;
+	uint32_t record;
+} press_keys[] = { { "power", HAKIOS_BUTTON_LOCK }, { "volume up", HAKIOS_BUTTON_VOLUME_UP },
+	           { "volume down", HAKIOS_BUTTON_VOLUME_DOWN } };
 
 static void
 press_step(__unused thread_call_param_t p0, __unused thread_call_param_t p1)
@@ -635,12 +642,13 @@ press_step(__unused thread_call_param_t p0, __unused thread_call_param_t p1)
 
 	down = !down;
 	now_text(when, sizeof(when), mach_absolute_time());
-	printf("buttons: press_power: power %s at %s\n", down ? "PRESSED (by the test)" : "released (by the test)", when);
-	hakios_touch_post(down ? HAKIOS_BUTTON_DOWN : HAKIOS_BUTTON_UP, HAKIOS_BUTTON_LOCK, 0, 0);
+	printf("buttons: press_power: %s %s at %s\n", press_keys[press_key].name,
+	    down ? "PRESSED (by the test)" : "released (by the test)", when);
+	hakios_touch_post(down ? HAKIOS_BUTTON_DOWN : HAKIOS_BUTTON_UP, press_keys[press_key].record, 0, 0);
 	if (down) {
 		clock_interval_to_deadline(press_ms, NSEC_PER_MSEC, &deadline);
 	} else if (--press_left > 0) {
-		clock_interval_to_deadline(10, NSEC_PER_SEC, &deadline);
+		clock_interval_to_deadline(press_gap, NSEC_PER_SEC, &deadline);
 	} else {
 		return;
 	}
@@ -657,12 +665,23 @@ press_power_init(void)
 		return;
 	}
 	PE_parse_boot_argn("press_power_ms", &press_ms, sizeof(press_ms));
+	PE_parse_boot_argn("press_key", &press_key, sizeof(press_key));
+	if (press_key > 2) {
+		press_key = 0;
+	}
+	if (press_key != 0) {
+		press_gap = 3;
+	}
 	press_left = 2;
+	PE_parse_boot_argn("press_count", &press_left, sizeof(press_left));
+	if (press_left == 0) {
+		return;
+	}
 	press_call = thread_call_allocate(press_step, NULL);
 	clock_interval_to_deadline(seconds, NSEC_PER_SEC, &deadline);
 	thread_call_enter_delayed(press_call, deadline);
-	printf("buttons: press_power: the power key will be pressed for %u ms at %u s and at %u s\n", press_ms, seconds,
-	    seconds + 10);
+	printf("buttons: press_power: the %s key will be pressed %u times for %u ms from %u s, %u s apart\n",
+	    press_keys[press_key].name, press_left, press_ms, seconds, press_gap);
 }
 
 void
