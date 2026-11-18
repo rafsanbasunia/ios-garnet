@@ -16,7 +16,7 @@ The device folder of ios-garnet, kept in the tree (`devices/manifest.conf`: `pat
 | **Display Panel** | 1.5K Flow AMOLED (1220 x 2712 @ 120 Hz, 68B colors, Dolby Vision) |
 | **PMIC & Rails** | PM6450 / PM7250B (SPMI Arbiter v7 `0x0c400000`, `touch_vddio` 1.8V on GPIO3, RPMh RSC DRV2 `ldoe9` 3.224V) |
 | **UEFI Platform** | Project Mu / Mu-Silicium (`garnetPkg`, `SILICIUM_UEFI.fd`) |
-| **Memory Window** | K60 notch 5 GB usable RAM window (`0xA1000000` image base, `0xF4000000` payload base) |
+| **Memory Window** | 8 GB: 6 GB window from `0x800000000` (the hypervisor's 256 MB at `0x830000000` and the firmware carveouts notched); 12 GB: 5 GB from `0x840000000`. `0xA1000000` loader image base, `0xF4000000` payload base |
 
 ---
 

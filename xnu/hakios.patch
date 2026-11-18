@@ -3564,10 +3564,39 @@ index 3ebc295117a3..de101eafc83b 100755
          if ord(c) >= 0x80: return True
 
 diff --git a/osfmk/vm/vm_resident.c b/osfmk/vm/vm_resident.c
-index 0aab8cc..e727c72 100644
+index 0aab8cc..2fae928 100644
 --- a/osfmk/vm/vm_resident.c
 +++ b/osfmk/vm/vm_resident.c
-@@ -1391,6 +1391,52 @@ uint64_t secluded_shutoff_headroom = 150 * 1024 * 1024; /* original value from N
+@@ -1227,6 +1227,10 @@ vm_page_bootstrap(
+  * On x86 it will allocate large pages if size is sufficiently large. We don't need to do this
+  * on ARM yet, due to the combination of a large base page size and smaller RAM devices.
+  */
++#if defined(__arm64__)
++static boolean_t garnet_phys_page_is_notched(ppnum_t pn);
++#endif
++
+ static void *
+ pmap_steal_memory_internal(
+ 	vm_size_t size,
+@@ -1321,6 +1325,17 @@ pmap_steal_memory_internal(
+ 		if (!pmap_next_page_hi(&phys_page, might_free)) {
+ 			panic("pmap_steal_memory() size: 0x%llx", (uint64_t)size);
+ 		}
++#if defined(__arm64__)
++		/*
++		 * Garnet / Redwood: a page of a notch (firmware, the hypervisor's, the resident root image) is never
++		 * the kernel's, not even this early, while the pages are still handed out in order: passed over.
++		 */
++		while (garnet_phys_page_is_notched(phys_page)) {
++			if (!pmap_next_page_hi(&phys_page, might_free)) {
++				panic("pmap_steal_memory() size: 0x%llx (past a notch)", (uint64_t)size);
++			}
++		}
++#endif
+ 
+ #if defined(__x86_64__)
+ 		pmap_pre_expand(kernel_pmap, map_addr);
+@@ -1391,6 +1406,53 @@ uint64_t secluded_shutoff_headroom = 150 * 1024 * 1024; /* original value from N
  #if defined(__arm64__)
  extern void patch_low_glo_vm_page_info(void *, void *, uint32_t);
  unsigned int vm_first_phys_ppnum = 0;
@@ -3583,7 +3612,8 @@ index 0aab8cc..e727c72 100644
 +};
 +
 +static const struct garnet_notch garnet_ram_notches_8gb[] = {
-+	{ 0x83fc00000ULL, 0x840000000ULL }, /* Hole 1: 4 MB firmware carveout */
++	{ 0x830000000ULL, 0x840000000ULL }, /* Hole 1: the hypervisor's 256 MB (UEFI's "HYP Reserved"), with the 4 MB
++	                                     * carveout at its top: inside the window since it starts at 0x800000000 */
 +	{ 0x8b9b00000ULL, 0x8ba100000ULL }, /* Hole 2: 6 MB firmware carveout */
 +	{ 0x8bbf00000ULL, 0x8c0000000ULL }, /* Hole 3: 65 MB firmware carveout */
 +	{ 0x8c8000000ULL, 0x95c940000ULL }, /* Root APFS ramdisk: ~2,377 MB */
@@ -3620,7 +3650,7 @@ index 0aab8cc..e727c72 100644
  #endif
  
  void vm_page_release_startup(vm_page_t mem);
-@@ -1405,6 +1451,23 @@ pmap_startup(
+@@ -1405,6 +1467,23 @@ pmap_startup(
  	uint64_t        start_ns;
  	uint64_t        now_ns;
  	uint_t          low_page_count = 0;
@@ -3644,7 +3674,7 @@ index 0aab8cc..e727c72 100644
  
  #if    defined(__LP64__)
  	/*
-@@ -1567,19 +1630,38 @@ pmap_startup(
+@@ -1567,19 +1646,38 @@ pmap_startup(
  #endif
  		++vm_pages_count;
  		vm_page_init(&vm_pages[i], phys_page, FALSE);
@@ -3683,7 +3713,7 @@ index 0aab8cc..e727c72 100644
  			}
  		} while (i != 0);
  	}
-@@ -1587,6 +1669,13 @@ pmap_startup(
+@@ -1587,6 +1685,13 @@ pmap_startup(
  	absolutetime_to_nanoseconds(mach_absolute_time(), &now_ns);
  	printf("pmap_startup() init/release time: %lld microsec\n", (now_ns - start_ns) / NSEC_PER_USEC);
  	printf("pmap_startup() delayed init/release of %d pages\n", vm_delayed_count);

@@ -31,8 +31,9 @@ Status: November 2026.
 - Audio: the system's audio server runs (volume keys and slider work), but the speakers are silent: garnet's audio
   DSP speaks AudioReach (GPR), and that path is not written yet.
 - Wi-Fi: no WPA3; channels 12-14 off; on 5 GHz a network shows only once its access point has been heard.
-- Graphics: coloured blocks during fast page swipes (a tile seam in the GMEM path); Control Center at about 35-40 fps;
-  120 Hz not reached.
+- Graphics: Control Center at about 35-40 fps; 120 Hz not reached.
+- Memory: iOS gets about 6 GB of the 8 GB (the rest is below 4 GB, among the firmware's regions), and the system
+  image takes 2.4 GB of it, so very heavy web pages can still run short.
 - No charging while iOS runs.
 - Nothing persists across reboots (RAM boot).
 - Security is off: code signatures are not enforced. Apple services (activation, Apple ID, iCloud, App Store) are not
@@ -159,6 +160,8 @@ Every argument: [docs/boot-args.md](docs/boot-args.md).
 | Wi-Fi identity | stable radio address derived from the SoC serial number when none is given |
 | Images | `garnet-wifi-image.sh`: firmware plus the network daemons (configd, mDNSResponder, securityd, trustd, nsurlsessiond) and the audio server (mediaserverd, with nanoregistryd, without which it hangs the boot) |
 | Debugging | `userland/src/stacks.c`: the threads of a running process and where each one waits (found the audio server's hang) |
+| GPU memory | surface mappings no longer leak (browsing ran the phone out of memory); kept buffers capped for all clients; `mem_owners=1` |
+| Memory | the kernel's window starts at 0x800000000: 6 GB instead of 5 on the 8 GB phone |
 
 ## Key hardware facts
 
@@ -167,7 +170,8 @@ Every argument: [docs/boot-args.md](docs/boot-args.md).
 - Wi-Fi: WCN3990-class radio ("adrastea") on the WPSS DSP; registers at 0x22800000, firmware memory 0x82a00000 (3 MB),
   SMMU stream 0x4c0, 12 level-triggered interrupts. Linux driver: ath10k (snoc). Board data: Xiaomi's `bd_n16*.bin`.
 - Display: 1220x2712 AMOLED, UEFI framebuffer. Touch: FocalTech FT3683G on SPI.
-- RAM: 8 GB (about 5 GB usable window).
+- RAM: 8 GB in three banks; the kernel's window is 0x800000000-0x980000000 (6 GB, the hypervisor's 256 MB at
+  0x830000000 left out), about 5.8 GB of it usable.
 
 ## Credits
 

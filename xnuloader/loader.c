@@ -2833,6 +2833,16 @@ choose_window(const struct payload_info *pi)
 		if (PLAT == &platform_garnet) {
 			is_12gb = (max_ram_hi > 0x980000000ULL);
 			print("garnet: detected %s RAM (max conventional PA %x)\n", is_12gb ? "12GB" : "8GB", max_ram_hi);
+			/*
+			 * The 8 GB phone's second bank starts at 0x800000000, and its first 768 MB are free RAM that the
+			 * window starting at 0x840000000 left out: the window starts there now, 6 GB to the top of the
+			 * third bank (0x980000000). Between them, 0x830000000..0x840000000, is the hypervisor's (UEFI's
+			 * "HYP Reserved"): the kernel never hands those pages out (vm_resident.c, the 8 GB notches).
+			 */
+			if (!is_12gb) {
+				best_base = 0x800000000ULL;
+				best_size = 0x180000000ULL;
+			}
 		}
 	} else if (pi->forced_base != 0) {
 		best_base = pi->forced_base;
