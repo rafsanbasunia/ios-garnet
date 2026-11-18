@@ -36,8 +36,8 @@ Status: November 2026.
 - Graphics: Control Center at about 35-40 fps; 120 Hz not reached.
 - Memory: iOS gets about 6 GB of the 8 GB (the rest is below 4 GB, among the firmware's regions), and the system
   image takes 2.4 GB of it, so very heavy web pages can still run short.
-- Charging: on a PC's USB port the charger takes about 0.4 A, less than the phone uses, so the level falls slowly
-  while iOS runs.
+- Charging: on a PC's USB port the charger takes 0.5 A, as under Android, but iOS here uses more than that (about
+  3 to 4 W idle, where Android uses about 1.3 W), so the level still falls slowly while iOS runs.
 - Nothing persists across reboots (RAM boot).
 - Security is off: code signatures are not enforced. Apple services (activation, Apple ID, iCloud, App Store) are not
   supported.

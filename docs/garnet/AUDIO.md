@@ -45,8 +45,12 @@ Not done: the earpiece as a separate route, the microphones, headphones (USB-C),
   sets its pins again when a read fails.
 - With Wi-Fi and the audio DSP together the kernel's 8 MB area for device mappings ran out (`io_map`): it is 64 MB.
 - This phone's loader wants every segment of the DSP's image, `adsp.b00` and `adsp.b01` included.
-- On a PC's USB port the charger takes about 0.4 A, less than the phone uses with the screen on: the battery
-  level falls slowly although the status says charging.
+- On a computer's USB port the charger takes 0.4 A until it is told the port's limit; Android's USB driver tells
+  it 0.5 A, and so does the kernel here now (the DSP takes no more than that for such a port, whatever it is asked
+  for). The phone still uses more with the screen on (about 3 to 4 W idle; Android about 1.3 W): the level falls
+  slowly although the status says charging.
+- The DSP's battery current is positive while the battery gives and negative while it takes charge; its charge
+  counter is in mAh.
 
 ## Firmware
 
@@ -65,3 +69,4 @@ and the speakers stay silent; nothing else changes.
 | `sound_below=N` | the loudest level, in eighths of a dB under Android's own (default 48: 6 dB under) |
 | `adsp_step=N` | bring-up only: do steps 1 to N and stop (14: a test tone into the graph, the amplifiers off; 15: the tone through the speakers, `adsp_below=N` under Android's level for `adsp_tone_secs=N` seconds) |
 | `speaker_probe=2` | read-only: ask the two amplifiers who they are |
+| `usb_ma=N` | the charger's input limit on a computer's port, in mA (default 500; 0: left as found) |

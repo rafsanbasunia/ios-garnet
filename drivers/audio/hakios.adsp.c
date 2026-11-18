@@ -2898,12 +2898,15 @@ hakios_adsp_gpr_events(hakios_gpr_events_t handler)
  * answer, or 2, a notice; an opcode) and its words; a property is asked for with opcode 0x30 (the
  * battery's) or 0x32 (the USB port's), the battery's number (0), the property's number and a word
  * that a get does not use, and is answered with the property's number, its value and a result (0:
- * good). Only gets are sent from here: nothing is set, no limit, no current, no notice asked for.
+ * good). Gets are sent from here, and one set: the charger's input limit on a computer's port (0x33,
+ * battmgr_port()); no charge current, no notice asked for.
  * With adsp=1 (battmgr=0: not) it is asked every BATTMGR_SECONDS while the DSP runs, and what it says
  * goes to drivers/power/hakios.battery.c (hakios_battery_report()), and from there to the power source
  * that Darwin reads (drivers/power/hakios.battery.cpp). battmgr=2: every property once, for the log.
  * Units: capacity in hundredths of a percent, voltage in uV, current in uA (more than 0 while the
- * battery takes charge), the temperature in hundredths of a degree, charges in uAh.
+ * battery gives, less while it takes charge: the other way round from what is reported on, and from Android's
+ * current_now with the same numbers), the temperature in hundredths of a degree, charges in uAh (the charge
+ * counter in mAh).
  * The properties' numbers are this phone's firmware's, read with battmgr=2 and checked against what
  * Android shows at the same moment (dumpsys battery, /sys/class/power_supply/battery): up to 9 they
  * are those of Linux's qcom_battmgr.c (sm8350), from there on one more property comes before the
@@ -2915,6 +2918,7 @@ hakios_adsp_gpr_events(hakios_gpr_events_t handler)
 #define BATTMGR_NOTICE          2
 #define BATTMGR_BATTERY_GET     0x30
 #define BATTMGR_USB_GET         0x32
+#define BATTMGR_USB_SET         0x33
 #define BATT_STATUS             0               /* Linux's POWER_SUPPLY_STATUS_*: 1 charging, 2 discharging, 3 not charging, 4 full */
 #define BATT_HEALTH             1
 #define BATT_PRESENT            2
@@ -2922,12 +2926,13 @@ hakios_adsp_gpr_events(hakios_gpr_events_t handler)
 #define BATT_VOLT_NOW           7
 #define BATT_CURR_NOW           9
 #define BATT_TEMP               13              /* hundredths of a degree: 3900 when Android says 39.0 */
-#define BATT_CHG_COUNTER        15              /* the charge in the battery now, uAh */
+#define BATT_CHG_COUNTER        15              /* the charge in the battery now, mAh on this firmware */
 #define BATT_CYCLE_COUNT        16
 #define BATT_CHG_FULL_DESIGN    17              /* 5000000 uAh */
 #define BATT_CHG_FULL           18              /* the full charge as the fuel gauge has learnt it, uAh */
 #define USB_VOLT_NOW            1               /* uV */
 #define USB_CURR_NOW            3               /* uA, what the port gives */
+#define USB_INPUT_LIMIT         5               /* uA: the most the charger takes from the port */
 #define USB_TYPE                6               /* Linux's POWER_SUPPLY_USB_TYPE_*: 1 here, a computer's port */
 #define USB_ONLINE              0
 #define BATTMGR_SECONDS         10
@@ -2998,6 +3003,56 @@ battmgr_get(uint32_t opcode, uint32_t property, uint32_t *value)
 	return false;
 }
 
+/* A property set: true when the DSP says it has taken it. */
+static bool
+battmgr_set(uint32_t opcode, uint32_t property, uint32_t value)
+{
+	struct battmgr_message q = { BATTMGR_OWNER, BATTMGR_REQUEST, opcode, { 0, property, value } };
+	uint32_t before = os_atomic_load(&battmgr.answers, acquire);
+
+	if (glink_send(&glink.channel[CHANNEL_PMIC], &q, sizeof(q)) != 0) {
+		return false;
+	}
+	for (unsigned ms = 0; ms < 1000; ms++) {
+		if (os_atomic_load(&battmgr.answers, acquire) != before) {
+			if (battmgr.opcode != opcode) {
+				before = battmgr.answers;       /* (somebody else's answer: wait on) */
+				continue;
+			}
+			return battmgr.result == 0;
+		}
+		sleep_ms(1);
+	}
+	return false;
+}
+
+/*
+ * A computer's port: the charger takes from it what it has been told it may, and untold that is 400 mA. On Android
+ * the USB driver tells it 500 mA once the computer has taken the phone's configuration (qti_battery_charger.c's
+ * usb_psy_set_icl()); here nobody did. So the limit is set to USB_PORT_UA when the port is a computer's (type 1),
+ * each time a cable comes; the DSP takes no more than that for such a port, whatever it is asked for. usb_ma=N
+ * asks for another limit, in mA; usb_ma=0 leaves the limit alone. Chargers are the DSP's own business.
+ */
+#define USB_PORT_UA             500000
+
+static void
+battmgr_port(uint32_t usb_type)
+{
+	uint32_t ma = USB_PORT_UA / 1000, before = 0, after = 0;
+	bool taken;
+
+	PE_parse_boot_argn("usb_ma", &ma, sizeof(ma));
+	if (usb_type != 1 || ma == 0 || ma > 3000) {
+		return;
+	}
+	(void)battmgr_get(BATTMGR_USB_GET, USB_INPUT_LIMIT, &before);
+	taken = battmgr_set(BATTMGR_USB_SET, USB_INPUT_LIMIT, ma * 1000);
+	sleep_ms(200);
+	(void)battmgr_get(BATTMGR_USB_GET, USB_INPUT_LIMIT, &after);
+	tell("adsp: battmgr: a computer's USB port: the charger's input limit was %u uA, asked to be %u uA: %s; it is %u uA\n",
+	    before, ma * 1000, taken ? "taken" : "NOT TAKEN", after);
+}
+
 static void
 battmgr_thread(__unused void *parameter, __unused wait_result_t result)
 {
@@ -3049,6 +3104,14 @@ battmgr_thread(__unused void *parameter, __unused wait_result_t result)
 				(void)battmgr_get(BATTMGR_USB_GET, USB_VOLT_NOW, &usb_volt);
 				(void)battmgr_get(BATTMGR_USB_GET, USB_CURR_NOW, &usb_curr);
 			}
+			{
+				static bool was_online;
+
+				if (usb && !was_online) {
+					battmgr_port(usb_type);
+				}
+				was_online = usb != 0;
+			}
 			if (round % 30 == 0 || full == 0) {
 				(void)battmgr_get(BATTMGR_BATTERY_GET, BATT_CHG_FULL, &full);
 				(void)battmgr_get(BATTMGR_BATTERY_GET, BATT_CHG_FULL_DESIGN, &design);
@@ -3056,12 +3119,12 @@ battmgr_thread(__unused void *parameter, __unused wait_result_t result)
 			}
 			b.percent_hundredths = (int32_t)capacity;
 			b.voltage_uv = (int32_t)volt;
-			b.current_ua = (int32_t)curr;
+			b.current_ua = -(int32_t)curr;          /* (the DSP counts what leaves the battery) */
 			b.temperature_hundredths = (int32_t)temp;
 			b.present = present != 0;
 			b.external = usb != 0;
 			b.status = (int32_t)status;
-			b.charge_uah = (int32_t)charge;
+			b.charge_uah = (int32_t)(charge < 100000 ? charge * 1000 : charge);     /* (mAh from this firmware) */
 			b.full_uah = (int32_t)full;
 			b.design_uah = (int32_t)design;
 			b.cycles = (int32_t)cycles;
