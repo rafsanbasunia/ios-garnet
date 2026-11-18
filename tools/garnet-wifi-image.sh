@@ -21,6 +21,13 @@
 #                   the system and nothing answers them. nanoregistryd has to come with it: the audio server asks the
 #                   paired-watch registry for its preferences while it starts and waits for the answer for ever, and
 #                   SpringBoard, which waits for the audio server, never gets past the Apple logo.
+#   FILEJOBS        files, the pasteboard and sharing (default: fileproviderd, filecoordinationd, pasted, druid, kbd,
+#                   sharingd). Without fileproviderd the Files app dies as it starts and every file picker says "the
+#                   requested app extension could not be found" (an application importing a file, Safari's downloads); without
+#                   pasted, Copy does nothing and Paste never shows (only the application in front may use the
+#                   pasteboard: a program started from a job list is refused); druid is drag and drop, kbd the
+#                   keyboard's text services, sharingd the share sheet ("Open in" another application). Files then
+#                   opens, but "On My iPhone" is not offered yet: its provider does not come up.
 #
 # Start the kernel with wifi=1. The driver's object is made by tools/mk-ath10k.sh and tools/mk-wlfw-cnss.sh before
 # the kernel is built (xnu-build.sh links xnu-deps/build/ath10k/out/ath10k.o when it is there).
@@ -32,15 +39,16 @@ JOBS=${3:-}
 DARWIN_ROOTFS=${DARWIN_ROOTFS:-sysimage/rootfs}
 NETJOBS=${NETJOBS-"com.apple.configd com.apple.mDNSResponder com.apple.securityd com.apple.trustd com.apple.nsurlsessiond"}
 MEDIAJOBS=${MEDIAJOBS-"com.apple.mediaserverd com.apple.nanoregistryd"}
+FILEJOBS=${FILEJOBS-"com.apple.FileProvider com.apple.FileCoordination com.apple.pasteboard.pasted com.apple.DragUI.druid com.apple.TextInput.kbd com.apple.sharingd"}
 [ -f "$F/wpss.mdt" ] || { echo "garnet-wifi-image.sh: no wpss.mdt in $F" >&2; exit 1; }
 [ -f "$F/board.bin" ] || echo "garnet-wifi-image.sh: no board.bin in $F (devices/garnet/pull-firmware.sh makes it): the driver will have no board data" >&2
 args=()
 for f in "$F"/wpss.mdt "$F"/wpss.b??; do args+=(--file "$f=/fw/$(basename "$f")"); done
 for f in "$F"/board.bin "$F"/bdwlan.??? "$F"/regdb.bin; do [ -f "$f" ] && args+=(--file "$f=/fw/$(basename "$f")"); done
 rm -rf out/wifi-jobs; mkdir -p out/wifi-jobs out/root
-if [ -n "$NETJOBS$MEDIAJOBS" ]; then
+if [ -n "$NETJOBS$MEDIAJOBS$FILEJOBS" ]; then
 	[ -d "$DARWIN_ROOTFS/System/Library/LaunchDaemons" ] || { echo "garnet-wifi-image.sh: no Darwin root filesystem at $DARWIN_ROOTFS (DARWIN_ROOTFS)" >&2; exit 1; }
-	python3 userland/mkjobs.py "$DARWIN_ROOTFS" out/wifi-jobs $NETJOBS $MEDIAJOBS
+	python3 userland/mkjobs.py "$DARWIN_ROOTFS" out/wifi-jobs $NETJOBS $MEDIAJOBS $FILEJOBS
 fi
 for f in out/wifi-jobs/*.plist; do [ -f "$f" ] && args+=(--file "$f=/LaunchDaemons/$(basename "$f")"); done
 [ -n "$JOBS" ] && args+=(--file "$JOBS=/etc/rc.jobs")
@@ -54,4 +62,4 @@ bash tools/garnet-root-apfs.sh devices/garnet/userland/root.apfs "$OUT" --plugin
 	--plugin-plist userland/src/RedwoodMetal-garnet.plist --osmesa xnu-deps/build/mesa/out/libOSMesa.8.dylib \
 	--file out/metal/sleepd_stub=/bin/sleepd_stub --file userland/src/com.redwood.svcstub.plist=/LaunchDaemons/com.redwood.svcstub.plist \
 	"${args[@]}" --manifest "$OUT.manifest" > out/root-wifi.log 2>&1 || { tail -20 out/root-wifi.log; exit 1; }
-echo "garnet-wifi-image.sh: $OUT: $(grep -c '^/fw/' "$OUT.manifest") files of firmware, $(ls out/wifi-jobs | wc -l) jobs of Darwin's (network and audio)"
+echo "garnet-wifi-image.sh: $OUT: $(grep -c '^/fw/' "$OUT.manifest") files of firmware, $(ls out/wifi-jobs | wc -l) jobs of Darwin's (network, audio, files)"
