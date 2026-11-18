@@ -49,7 +49,8 @@
  *              from here a thread of ours listens to the DSP
  *  10  talks   QRTR on that channel: hello both ways, and the services the DSP tells of, written
  *              down for adsp_listen seconds (default 3)
- *  11  talks   APR, on the channel apr_audio_svc that the DSP opens and we answer as well: whether
+ *  11  talks   APR, on the channel apr_audio_svc that the DSP opens and we answer as well (or GPR, on
+ *              adsp_apps, with a DSP of the newer kind: is its audio framework ready): whether
  *              the audio services are up, and which there are (see step_apr())
  *
  * Once everything is up with adsp=1, the sound's path takes over (hakios.sound.c, boot-arg sound=N):
@@ -113,7 +114,7 @@ extern lck_mtx_t hakios_rsc_lock;            /* RPMh's sequencer, shared with th
 
 static LCK_GRP_DECLARE(adsp_lock_group, "hakios-adsp");
 
-#define STEPS                   11
+#define STEPS                   15
 #define HAKIOS_SOC_BASE        0x00400000ul    /* where the loader says the phone's peripherals begin */
 
 static uint32_t last_step, pause_ms = 2200, listen_seconds = 3;
@@ -625,7 +626,8 @@ static struct block aoss = { "mailbox", 0x0c300000, 0x400 };
 #define IPCC_GLINK              0u
 #define IPCC_SMP2P              2u
 
-static struct block ipcc = { "ipcc", 0x00408000, 0x1000 };
+/* (garnet, SM7435: dt qcom,ipcc@ed18000; the POCO X5 Pro this was written on has it at 0x408000) */
+static struct block ipcc = { "ipcc", 0x0ed18000, 0x1000 };
 
 static struct {
 	uint32_t glink, smp2p, said;
@@ -816,7 +818,8 @@ struct cmd_db_entry {
 
 static const struct cmd_db_header *cmd_db;
 
-static struct block rsc = { "rsc", 0x18220000, 0x10000 };
+/* (garnet: dt rsc@17a00000 "apps_rsc", its drv-2 at 0x17a20000; the POCO X5 Pro has it at 0x18220000) */
+static struct block rsc = { "rsc", 0x17a20000, 0x10000 };
 #define RSC_TCS_BASE            0xd00
 #define RSC_IRQ_STATUS          (RSC_TCS_BASE + 0x04)   /* a bit per TCS: done */
 #define RSC_IRQ_CLEAR           (RSC_TCS_BASE + 0x08)
@@ -983,8 +986,10 @@ step_survey(void)
 
 /* ---- step 2: the firmware -------------------------------------------------------------------------- */
 
-#define ADSP_MEMORY             0x86700000u     /* dt: reserved-memory adsp@86700000, memory-region of qcom,lpass@3700000 */
-#define ADSP_MEMORY_SIZE        0x04000000u
+/* (garnet: dt reserved-memory adsp_region@9f500000, 49 MB, memory-region of remoteproc-adsp@3000000; the POCO X5 Pro
+ * has 64 MB at 0x86700000) */
+#define ADSP_MEMORY             0x9f500000u
+#define ADSP_MEMORY_SIZE        0x03100000u
 #define PAS_ADSP                1               /* dt: qcom,pas-id */
 
 
@@ -1038,10 +1043,27 @@ root_file(const char *name, uint64_t *size)
 static bool from_root;                  /* the image is in memory of ours (root_file()), to be given back once written */
 
 /* For the sound (hakios.sound.c): a file of /fw on the root, read whole into memory of ours, and given back. */
+extern const uint8_t *hakios_image_file(const char *dir, const char *name, uint64_t *size, int *disk_out);
+
 const uint8_t *
 hakios_adsp_fw_file(const char *name, uint64_t *size)
 {
-	return root_file(name, size);
+	const uint8_t *data = root_file(name, size), *image;
+	uint8_t *copy;
+
+	if (data != NULL) {
+		return data;
+	}
+	/* (else the image's fw/, as a copy: what is returned here is given back with hakios_adsp_fw_free()) */
+	image = hakios_image_file("fw", name, size, NULL);
+	if (image == NULL || *size == 0 || *size > ADSP_MEMORY_SIZE) {
+		return NULL;
+	}
+	copy = kalloc_data(*size, Z_WAITOK);
+	if (copy != NULL) {
+		memcpy(copy, image, *size);
+	}
+	return copy;
 }
 
 void
@@ -1053,7 +1075,6 @@ hakios_adsp_fw_free(const uint8_t *data, uint64_t size)
 }
 
 /* A file of fw/ in the small image (ADSP=1 userland/build.sh puts fw-audio/ there), else of /fw on the root (above). */
-extern const uint8_t *hakios_image_file(const char *dir, const char *name, uint64_t *size, int *disk_out);
 static const uint8_t *
 image_file(const char *name, uint64_t *size)
 {
@@ -1079,6 +1100,7 @@ image_file(const char *name, uint64_t *size)
 
 
 #define MDT_HASH(flags)         (((flags) >> 24 & 7) == 2)
+#define MDT_RELOCATABLE(flags)  (((flags) >> 27 & 1) != 0)      /* Linux: QCOM_MDT_RELOCATABLE */
 #define MAX_SEGMENTS            48
 
 struct elf_segment {
@@ -1128,6 +1150,7 @@ step_firmware(void)
 	uint64_t size = 0, files = 0;
 	uint32_t count, hashes = 0, lowest = ~0u, highest = 0;
 	uint8_t first[4] = { 0 };
+	bool relocatable = true;
 
 	announce("find the audio DSP's image in the small image or on the root, and check it against its own header");
 	image_forget();
@@ -1157,13 +1180,13 @@ step_firmware(void)
 		if (segment.type != 1 || MDT_HASH(segment.flags) || segment.memory_size == 0) {
 			continue;
 		}
-		if (segment.paddr < ADSP_MEMORY || segment.file_size > segment.memory_size ||
-		    (uint64_t)segment.paddr + segment.memory_size > (uint64_t)ADSP_MEMORY + ADSP_MEMORY_SIZE) {
-			printf("adsp: %u: segment %u (%#x, %#x bytes) is not within the DSP's memory\n", step, i, segment.paddr,
-			    segment.memory_size);
+		if (segment.file_size > segment.memory_size) {
+			printf("adsp: %u: segment %u (%#x, %#x bytes) has more in its file (%#x)\n", step, i, segment.paddr,
+			    segment.memory_size, segment.file_size);
 			goto fail;
 		}
-		image.segment[image.segments].at = segment.paddr - ADSP_MEMORY;
+		relocatable = relocatable && MDT_RELOCATABLE(segment.flags);
+		image.segment[image.segments].at = segment.paddr;       /* (less the lowest address, below) */
 		image.segment[image.segments].file_size = segment.file_size;
 		image.segment[image.segments].memory_size = segment.memory_size;
 		image.segment[image.segments].file = NULL;
@@ -1188,14 +1211,34 @@ step_firmware(void)
 		highest = segment.paddr + segment.memory_size > highest ? segment.paddr + segment.memory_size : highest;
 		image.segments++;
 	}
-	if (image.segments == 0 || lowest != ADSP_MEMORY || 52 + 32 * count + (uint64_t)hashes != size) {
+	/*
+	 * Where the segments say they are is where the image was linked. Garnet's is linked at 0x87300000 and marked
+	 * relocatable in every segment: it goes to the start of the DSP's memory, each segment as far from it as from
+	 * the lowest (Linux: mdt_loader.c, QCOM_MDT_RELOCATABLE), and TrustZone is told the place. One not so marked
+	 * has to have been linked for the DSP's memory itself (the POCO X5 Pro's).
+	 */
+	if (image.segments != 0 && lowest != ADSP_MEMORY && !relocatable) {
+		printf("adsp: %u: the image is linked at %#x, not the DSP's %#x, and may not be moved\n", step, lowest, ADSP_MEMORY);
+		goto fail;
+	}
+	if (image.segments != 0 && (uint64_t)highest - lowest > ADSP_MEMORY_SIZE) {
+		printf("adsp: %u: the image (%#x..%#x) is larger than the DSP's memory (%#x)\n", step, lowest, highest, ADSP_MEMORY_SIZE);
+		goto fail;
+	}
+	for (unsigned k = 0; k < image.segments; k++) {
+		image.segment[k].at -= lowest;
+	}
+	if (image.segments != 0 && lowest != ADSP_MEMORY) {
+		printf("adsp: %u: the image is linked at %#x and relocatable: it goes to %#x\n", step, lowest, ADSP_MEMORY);
+	}
+	if (image.segments == 0 || 52 + 32 * count + (uint64_t)hashes != size) {
 		printf("adsp: %u: not what TrustZone takes: %u segments to load, the lowest at %#x; the header file has %llu bytes, "
 		    "the header %u and the hashes %u\n", step, image.segments, lowest, size, 52 + 32 * count, hashes);
 		goto fail;
 	}
 	image.header = header;
 	image.header_size = size;
-	image.size = ((highest + 0xfff) & ~0xfffu) - ADSP_MEMORY;
+	image.size = ((highest + 0xfff) & ~0xfffu) - lowest;
 	printf("adsp: %u: the image is whole (%s): a header of %llu bytes (%u of hashes), %u segments, %llu bytes of files, %#x "
 	    "bytes of the DSP's %#x from %#x\n", step, from_root ? "from /fw on the root" : "from the small image", size, hashes,
 	    image.segments, files, image.size, ADSP_MEMORY_SIZE, ADSP_MEMORY);
@@ -1369,6 +1412,11 @@ dsp_ask_to_stop(uint32_t bound_ms)
 
 static void link_stop(void);
 
+static void prm_release(void);         /* (below, with the resource manager) */
+static void graph_close(void);
+static void tone_over(void);
+static void speakers_off(void);
+
 /* Asked to stop, then shut down by TrustZone, then the always-on processor told that the image is gone. */
 static bool
 dsp_shutdown(const char *why)
@@ -1378,6 +1426,9 @@ dsp_shutdown(const char *why)
 
 	printf("adsp: %u: %s: the audio DSP is asked to stop, then TrustZone to shut it down\n", step, why);
 	if (!leaving) {
+		speakers_off();         /* (the amplifiers before their clock goes) */
+		graph_close();          /* (the graph first, then what it ran on) */
+		prm_release();          /* (what the resource manager was asked for, while the link still runs) */
 		link_stop();
 	}
 	stopped_by_its_word = dsp_ask_to_stop(leaving ? 2000 : 5000);
@@ -1825,7 +1876,7 @@ struct glink_packet {
  * carries APR, the audio services' own protocol (below; Android's apr_tal_rpmsg.c asks for no
  * particular intents: what the DSP sends there is a few hundred bytes, up to a few kilobytes).
  */
-enum { CHANNEL_QRTR, CHANNEL_APR, CHANNEL_PMIC, CHANNELS };
+enum { CHANNEL_QRTR, CHANNEL_APR, CHANNEL_PMIC, CHANNEL_GPR, CHANNELS };
 
 struct glink_channel {
 	const char *name;
@@ -1839,7 +1890,8 @@ struct glink_channel {
 	struct {
 		uint32_t id, size;
 		bool there, in_use;
-	} their_intents[64];                    /* what we may send into */
+	} their_intents[256];                   /* what we may send into (garnet's DSP offers some eighty of 128 bytes on
+	                                         * adsp_apps before a larger one is asked for: 64 places lost that one) */
 	struct {
 		uint32_t size, fill;
 		uint8_t *data;
@@ -1863,6 +1915,8 @@ static struct {
 		[CHANNEL_APR] = { .name = "apr_audio_svc", .ours = 2, .intents = { { 0x200, 8 }, { 0x1000, 4 }, { 0x2000, 2 } } },
 		/* the battery manager's (battmgr below): answers of a few dozen bytes, a name of 128 */
 		[CHANNEL_PMIC] = { .name = "PMIC_RTR_ADSP_APPS", .ours = 3, .intents = { { 0x200, 6 }, { 0x1000, 2 }, { 0, 0 } } },
+		/* GPR, the newer DSPs' audio protocol (below; dt: qcom,intents of qcom,gpr are twenty of 0x200) */
+		[CHANNEL_GPR] = { .name = "adsp_apps", .ours = 4, .intents = { { 0x200, 20 }, { 0x1000, 2 }, { 0, 0 } } },
 	},
 };
 
@@ -2293,6 +2347,20 @@ glink_send(struct glink_channel *channel, const void *data, uint32_t length)
 			asked = true;
 		}
 		if (waited >= 5000 || (!fits && asked && channel->request_answered && !channel->request_granted)) {
+			char line[400];
+			int at = 0;
+
+			/* (what the DSP has offered on this channel: for the log, when a message found no place) */
+			for (unsigned n = 0; n < sizeof(channel->their_intents) / sizeof(channel->their_intents[0]) && at < 380; n++) {
+				if (channel->their_intents[n].there && channel->their_intents[n].size > 128) {
+					at += snprintf(line + at, sizeof(line) - (size_t)at, " %u:%u%s", channel->their_intents[n].id,
+					    channel->their_intents[n].size, channel->their_intents[n].in_use ? "*" : "");
+				}
+			}
+			line[at] = 0;
+			printf("adsp: glink: no place for %u bytes on \"%s\" after %u ms (asked %d, answered %d, granted %d); the DSP's "
+			    "intents (number:size, * in use):%s\n", length, channel->name, waited, asked, channel->request_answered,
+			    channel->request_granted, line);
 			lck_mtx_unlock(&glink_lock);
 			return found < 0 ? ENOBUFS : EAGAIN;
 		}
@@ -2659,6 +2727,167 @@ apr_ask(uint8_t service, uint32_t opcode, const void *payload, uint32_t length, 
 	return hakios_adsp_apr(service, 0, 0, opcode, payload, length, ms, NULL);
 }
 
+/* ---- GPR: the audio framework's protocol (AudioReach), on the channel adsp_apps --------------------------- */
+
+/*
+ * A newer audio DSP (garnet's) does not open apr_audio_svc: its audio framework, SPF, speaks GPR on the channel
+ * adsp_apps (dt: qcom,gpr under the DSP's glink-edge; Linux: drivers/soc/qcom/apr.c, include/linux/soc/qcom/apr.h,
+ * sound/soc/qcom/qdsp6/audioreach.h). A packet is a header of six words -- version, the header's length in words
+ * and the packet's in bytes in the first; the domains it is to and from (the DSP 2, we 3) in the second; then the
+ * port it is from, the port it is to, a token the answer carries back, an opcode -- and what the opcode takes. A
+ * port is a module's instance: 1 the audio processing manager (APM: the graphs), 2 the proxy resource manager
+ * (PRM: clocks and pins). A command is answered with its own answer's opcode or with GPR_BASIC_RSP_RESULT (the
+ * command's opcode, then a status: 0 is good).
+ */
+#define GPR_DOMAIN_ADSP                 2
+#define GPR_DOMAIN_APPS                 3
+#define GPR_BASIC_RSP_RESULT            0x02001005u
+#define GPR_BASIC_RSP_ACCEPTED          0x02001006u
+#define APM_CMD_GET_SPF_STATE           0x01001021u
+#define APM_CMD_RSP_GET_SPF_STATE       0x02001007u
+
+struct gpr_header {
+	uint32_t sizes;                         /* [3:0] version 0, [7:4] the header's words, [31:8] the packet's bytes */
+	uint8_t to_domain, from_domain;
+	uint16_t reserved;
+	uint32_t from_port, to_port, token, opcode;
+};
+
+static struct {
+	uint32_t opcode, token, length;
+	uint32_t words[64];
+	volatile bool there;
+} gpr_answer;
+static uint32_t gpr_in, gpr_out, gpr_next_token = 1;
+static uint32_t gpr_waited_for;         /* the token a question waits for the answer to; 0: none */
+static hakios_gpr_events_t gpr_events; /* the sound's: what nobody waits for */
+static LCK_MTX_DECLARE(gpr_lock, &adsp_lock_group);     /* one question at a time */
+
+/* A packet from the DSP's audio framework. From the link's thread. */
+static void
+gpr_input(const uint8_t *data, uint32_t length)
+{
+	struct gpr_header header;
+	uint32_t header_length, size, payload;
+
+	if (length < sizeof(header)) {
+		printf("adsp: gpr: %u bytes, no GPR packet\n", length);
+		return;
+	}
+	memcpy(&header, data, sizeof(header));
+	header_length = (header.sizes >> 4 & 0xf) * 4;
+	size = header.sizes >> 8;
+	/* (the sizes are the DSP's word: a header or a packet that does not fit what arrived is dropped) */
+	if (header_length < sizeof(header) || header_length > length || (size < length ? size : length) < header_length) {
+		printf("adsp: gpr: a header of %u bytes, a packet of %u, in %u bytes: dropped\n", header_length, size, length);
+		return;
+	}
+	payload = (size < length ? size : length) - header_length;
+	gpr_in++;
+	if (header.token != gpr_waited_for || gpr_waited_for == 0) {
+		hakios_gpr_events_t events = gpr_events;
+		uint32_t words[64];
+
+		bzero(words, sizeof(words));
+		memcpy(words, data + header_length, payload < sizeof(words) ? payload : sizeof(words));
+		if (events != NULL && events(header.from_port, header.to_port, header.opcode, header.token, words,
+		    payload < sizeof(words) ? payload : sizeof(words))) {
+			return;
+		}
+	}
+	if (gpr_in <= 60) {
+		uint32_t w[4] = { 0, 0, 0, 0 };
+
+		memcpy(w, data + header_length, payload < sizeof(w) ? payload : sizeof(w));
+		printf("adsp: gpr: < from port %#x of domain %u to port %#x of %u: opcode %#x, token %u, %u bytes: %#x %#x %#x %#x\n",
+		    header.from_port, header.from_domain, header.to_port, header.to_domain, header.opcode, header.token, payload, w[0],
+		    w[1], w[2], w[3]);
+	}
+	if (header.token != gpr_waited_for) {
+		return;                         /* (for the log alone: the place below is the waited-for answer's) */
+	}
+	bzero(gpr_answer.words, sizeof(gpr_answer.words));
+	memcpy(gpr_answer.words, data + header_length, payload < sizeof(gpr_answer.words) ? payload : sizeof(gpr_answer.words));
+	gpr_answer.length = payload;
+	gpr_answer.opcode = header.opcode;
+	gpr_answer.token = header.token;
+	os_atomic_store(&gpr_answer.there, true, release);
+}
+
+/*
+ * A command to a module of the DSP's audio framework (to_port; from_port is ours, by convention the same
+ * module's number), and with ms its answer waited for: true when it was sent and, if waited for, answered; the
+ * answer is in gpr_answer and, if asked for, in *answer. Up to GPR_PAYLOAD_MAX bytes of payload.
+ */
+#define GPR_PAYLOAD_MAX 1024
+
+bool
+hakios_adsp_gpr(uint32_t from_port, uint32_t to_port, uint32_t token, uint32_t opcode, const void *payload, uint32_t length,
+    uint32_t ms, struct hakios_apr_answer *answer)
+{
+	static uint8_t packet[sizeof(struct gpr_header) + GPR_PAYLOAD_MAX];     /* (under gpr_lock) */
+	struct gpr_header *header = (struct gpr_header *)packet;
+	bool answered = false;
+	int error;
+
+	if (length > GPR_PAYLOAD_MAX || !glink.channel[CHANNEL_GPR].open) {
+		return false;
+	}
+	lck_mtx_lock(&gpr_lock);
+	bzero(packet, sizeof(*header));
+	header->sizes = (uint32_t)(sizeof(*header) / 4) << 4 | (uint32_t)(sizeof(*header) + length) << 8;
+	header->to_domain = GPR_DOMAIN_ADSP;
+	header->from_domain = GPR_DOMAIN_APPS;
+	header->from_port = from_port;
+	header->to_port = to_port;
+	header->opcode = opcode;
+	if (length != 0) {
+		memcpy(packet + sizeof(*header), payload, length);
+	}
+	if (token == 0) {
+		token = gpr_next_token++;
+		if (gpr_next_token >= 0x01000000u) {
+			gpr_next_token = 1;
+		}
+	}
+	header->token = token;
+	if (ms != 0) {
+		gpr_answer.there = false;
+		gpr_waited_for = token;
+	}
+	error = glink_send(&glink.channel[CHANNEL_GPR], packet, (uint32_t)sizeof(*header) + length);
+	if (error != 0) {
+		printf("adsp: gpr: > opcode %#x to port %#x: NOT SENT (%d)\n", opcode, to_port, error);
+	} else {
+		gpr_out++;
+		answered = ms == 0;
+		for (uint32_t waited = 0; waited < ms && !answered; waited++) {
+			if (os_atomic_load(&gpr_answer.there, acquire) && gpr_answer.token == token) {
+				answered = true;
+				if (answer != NULL) {
+					answer->opcode = gpr_answer.opcode;
+					answer->token = gpr_answer.token;
+					answer->length = gpr_answer.length;
+					memcpy(answer->words, gpr_answer.words, sizeof(answer->words));
+				}
+				break;
+			}
+			sleep_ms(1);
+		}
+	}
+	if (ms != 0) {
+		gpr_waited_for = 0;
+	}
+	lck_mtx_unlock(&gpr_lock);
+	return answered;
+}
+
+void
+hakios_adsp_gpr_events(hakios_gpr_events_t handler)
+{
+	gpr_events = handler;
+}
+
 /* ---- the battery manager, on the channel PMIC_RTR_ADSP_APPS ------------------------------------------ */
 
 /*
@@ -2937,6 +3166,8 @@ link_thread(__unused void *parameter, __unused wait_result_t result)
 				qrtr_input(packet->data, packet->length);
 			} else if (from == CHANNEL_PMIC) {
 				battmgr_input(packet->data, packet->length);
+			} else if (from == CHANNEL_GPR) {
+				gpr_input(packet->data, packet->length);
 			} else {
 				apr_input(packet->data, packet->length);
 			}
@@ -2989,6 +3220,7 @@ link_stop(void)
 	bzero(qrtr_servers, sizeof(qrtr_servers));
 	qrtr_peer = 0;
 }
+
 
 /* ---- step 8: GLINK's queues, looked at -------------------------------------------------------------- */
 
@@ -3053,7 +3285,7 @@ step_link(void)
 		channel->theirs = channel->our_intent_count = 0;
 		bzero(channel->their_intents, sizeof(channel->their_intents));
 	}
-	apr_in = apr_out = 0;
+	apr_in = apr_out = gpr_in = gpr_out = 0;
 	audio_up = false;
 	bzero(glink.others, sizeof(glink.others));
 	glink.trace = 60;
@@ -3073,10 +3305,11 @@ step_link(void)
 		sleep_ms(1);
 	}
 	sleep_ms(50);
-	printf("adsp: %u: %llu ms after our version: versions %s (features %#x); the channel \"IPCRTR\" is %s, \"apr_audio_svc\" %s; "
+	printf("adsp: %u: %llu ms after our version: versions %s (features %#x); the channel \"IPCRTR\" is %s, \"apr_audio_svc\" %s, \"adsp_apps\" %s; "
 	    "the DSP also opened \"%s\" \"%s\" \"%s\" \"%s\"\n", step, (now_us() - began) / 1000, glink.agreed ? "agreed" :
 	    "NOT AGREED", glink.features, glink.channel[CHANNEL_QRTR].open ? "OPEN" : "NOT OPEN",
-	    glink.channel[CHANNEL_APR].open ? "OPEN" : "NOT OPEN", glink.others[0], glink.others[1], glink.others[2], glink.others[3]);
+	    glink.channel[CHANNEL_APR].open ? "OPEN" : "NOT OPEN", glink.channel[CHANNEL_GPR].open ? "OPEN" : "NOT OPEN",
+	    glink.others[0], glink.others[1], glink.others[2], glink.others[3]);
 	return glink.channel[CHANNEL_QRTR].open;
 }
 
@@ -3104,6 +3337,35 @@ step_qrtr(void)
 	return qrtr_hellos != 0;
 }
 
+/* ---- step 11, on a DSP that speaks GPR --------------------------------------------------------------- */
+
+static bool
+step_gpr(void)
+{
+	uint32_t wait_seconds = 10, asked = 0, state = 0;
+	uint64_t began = now_us();
+
+	PE_parse_boot_argn("adsp_apr_wait", &wait_seconds, sizeof(wait_seconds));
+	announce("ask the DSP's audio framework over GPR (the channel adsp_apps) whether it is ready (again and again, as "
+	    "Android does)");
+	while (now_us() - began < wait_seconds * 1000000ull) {
+		asked++;
+		if (hakios_adsp_gpr(GPR_PORT_APM, GPR_PORT_APM, 0, APM_CMD_GET_SPF_STATE, NULL, 0, 500, NULL) &&
+		    gpr_answer.opcode == APM_CMD_RSP_GET_SPF_STATE) {
+			state = gpr_answer.words[0];
+			if (state == 1) {
+				break;
+			}
+		}
+		sleep_ms(200);
+	}
+	audio_up = state == 1;
+	printf("adsp: %u: %s after %llu ms and %u questions (the last answer: opcode %#x, %u bytes, %#x %#x)\n", step, state == 1 ?
+	    "THE AUDIO FRAMEWORK IS READY" : "THE AUDIO FRAMEWORK DOES NOT SAY IT IS READY", (now_us() - began) / 1000, asked,
+	    gpr_answer.opcode, gpr_answer.length, gpr_answer.words[0], gpr_answer.words[1]);
+	return state == 1;
+}
+
 /* ---- step 11: APR ---------------------------------------------------------------------------------- */
 
 static bool
@@ -3115,8 +3377,11 @@ step_apr(void)
 	PE_parse_boot_argn("adsp_apr_wait", &wait_seconds, sizeof(wait_seconds));
 	announce("ask the audio DSP's core service over APR whether the audio services are up (again and again, as Android "
 	    "does), then which services it has");
-	for (unsigned ms = 0; ms < 3000 && !glink.channel[CHANNEL_APR].open; ms++) {
+	for (unsigned ms = 0; ms < 3000 && !glink.channel[CHANNEL_APR].open && !glink.channel[CHANNEL_GPR].open; ms++) {
 		sleep_ms(1);
+	}
+	if (glink.channel[CHANNEL_GPR].open) {
+		return step_gpr();              /* (a DSP of the newer kind: AudioReach) */
 	}
 	if (!glink.channel[CHANNEL_APR].open) {
 		printf("adsp: %u: the channel \"apr_audio_svc\" is not open: the DSP has not opened it\n", step);
@@ -3152,11 +3417,834 @@ step_apr(void)
 	return state == 1;
 }
 
+/* ---- step 12: the DSP's resource manager (PRM), on a DSP that speaks GPR ---------------------------- */
+
+/*
+ * LPASS's clocks and its low-power island's pins are the DSP's to give: the proxy resource manager (GPR port 2)
+ * takes votes for a "hardware core" (1 the LPASS core, 2 the audio codec's side: without them LPASS's own
+ * registers, the island's pin controller among them, are not clocked and a read of one ends the kernel) and
+ * requests for an audio clock by number, rate, attribute and root (Linux: sound/soc/qcom/qdsp6/q6prm.c and
+ * q6prm.h; Android's audio_prm.c). A request is a command header of four words (an address and a handle for
+ * parameters kept outside the packet, here none, and the size of what follows) and a module's parameter:
+ * instance (the PRM's own number), the parameter, its size, an error word, then the parameter's words. The
+ * answer is the command's opcode and a status.
+ *
+ * Garnet's speaker amplifiers hang on the island's TDM interface 1 (dt: quin_mi2s_pinctrl, lpi_tdm1_*: island
+ * pins 6 clock, 7 sync, 8 and 9 data; Android's backend TDM-LPAIF_VA-RX-PRIMARY: 96 kHz, 32 bits, 4 slots),
+ * whose bit clock is the "quinary TDM" one: 96000 x 32 x 4 = 12.288 MHz.
+ */
+#define PRM_CMD_REQUEST_HW_RSC          0x0100100fu
+#define PRM_CMD_RSP_REQUEST_HW_RSC      0x02001002u
+#define PRM_CMD_RELEASE_HW_RSC          0x01001010u
+#define PRM_CMD_RSP_RELEASE_HW_RSC      0x02001003u
+#define PARAM_ID_RSC_AUDIO_HW_CLK       0x0800102cu
+#define PARAM_ID_RSC_HW_CORE            0x08001032u
+#define PRM_HW_CORE_LPASS               1
+#define PRM_HW_CORE_DCODEC              2
+#define PRM_CLK_QUIN_TDM_IBIT           0x208
+#define PRM_CLK_ATTRIBUTE_COUPLE_NO     1
+#define PRM_CLK_ROOT_DEFAULT            0
+#define SPEAKER_TDM_HZ                  (96000u * 32 * 4)
+
+static struct block lpi = { "the island's pins", 0x03440000, 0x17000 };        /* dt: lpi_pinctrl@3440000, 23 pins, 4K each */
+static bool prm_core_voted[3], prm_clock_on;
+
+/*
+ * The speakers' four pins of the island (6 the bit clock, 7 the frame sync, 8 and 9 data), as the device tree has
+ * them while sound plays (lpi_tdm1_*_active: function 2, no pull, 8 mA, driven) -- and back as they were found. A
+ * pin's first word: [1:0] pull, [5:2] function, [8:6] strength (2 mA steps), [9] driven; its second: [1] the level
+ * it drives as a plain pin. Only with both of LPASS's votes held: without them these registers are not clocked.
+ */
+#define SPEAKER_PIN_FIRST       6
+#define SPEAKER_PINS            4
+#define SPEAKER_PIN_ACTIVE      (2u << 2 | 3u << 6 | 1u << 9)
+static uint32_t speaker_pins_before[SPEAKER_PINS][2];
+static bool speaker_pins_set;
+
+static void
+speaker_pins(bool active)
+{
+	if (active == speaker_pins_set || !prm_core_voted[PRM_HW_CORE_LPASS] || !prm_core_voted[PRM_HW_CORE_DCODEC]) {
+		return;
+	}
+	need(&lpi);
+	for (uint32_t i = 0; i < SPEAKER_PINS; i++) {
+		vm_offset_t pin = lpi.base + 0x1000 * (SPEAKER_PIN_FIRST + i);
+
+		if (active) {
+			speaker_pins_before[i][0] = rd(pin);
+			speaker_pins_before[i][1] = rd(pin + 4);
+			wr(pin + 4, 1u << 1);
+			wr(pin, SPEAKER_PIN_ACTIVE);
+		} else {
+			wr(pin, speaker_pins_before[i][0]);
+			wr(pin + 4, speaker_pins_before[i][1]);
+		}
+		printf("adsp: %u: island pin %u: configuration %#x -> %#x, value %#x\n", step, SPEAKER_PIN_FIRST + i,
+		    active ? speaker_pins_before[i][0] : SPEAKER_PIN_ACTIVE, rd(pin), rd(pin + 4));
+	}
+	speaker_pins_set = active;
+}
+
+/* One request of the resource manager's, or its release; true when the DSP says 0. */
+static bool
+prm_ask(bool request, uint32_t parameter, const uint32_t *words, uint32_t count, const char *what)
+{
+	uint32_t payload[8 + 8];
+	bool answered;
+
+	/* (the command's own header first: where its parameters are when they are not in the packet -- nowhere --, and their size) */
+	payload[0] = payload[1] = payload[2] = 0;
+	payload[3] = (4 + count) * 4;
+	payload[4] = GPR_PORT_PRM;
+	payload[5] = parameter;
+	payload[6] = count * 4;
+	payload[7] = 0;                         /* (the error word: the DSP's to fill in) */
+	memcpy(&payload[8], words, count * 4);
+	answered = hakios_adsp_gpr(GPR_PORT_PRM, GPR_PORT_PRM, 0, request ? PRM_CMD_REQUEST_HW_RSC : PRM_CMD_RELEASE_HW_RSC, payload,
+	    (8 + count) * 4, 2000, NULL);
+	printf("adsp: %u: the resource manager, %s %s: %s (opcode %#x, %u bytes: %#x %#x)\n", step, request ? "asked for" :
+	    "given back", what, !answered ? "NO ANSWER" : gpr_answer.words[1] == 0 ? "done" : "REFUSED", gpr_answer.opcode,
+	    gpr_answer.length, gpr_answer.words[0], gpr_answer.words[1]);
+	return answered && gpr_answer.length >= 8 && gpr_answer.words[1] == 0;
+}
+
+static bool
+prm_core(uint32_t core, bool on)
+{
+	bool done = prm_ask(on, PARAM_ID_RSC_HW_CORE, &core, 1, core == PRM_HW_CORE_LPASS ? "the LPASS core's vote" :
+	    "the audio side's vote");
+
+	prm_core_voted[core] = on ? done : false;
+	return done;
+}
+
+static bool
+prm_speaker_clock(bool on)
+{
+	uint32_t words[5] = { 1, PRM_CLK_QUIN_TDM_IBIT, SPEAKER_TDM_HZ, PRM_CLK_ATTRIBUTE_COUPLE_NO, PRM_CLK_ROOT_DEFAULT };
+	bool done;
+
+	if (!on) {
+		/* (a release names the clock alone) */
+		done = prm_ask(false, PARAM_ID_RSC_AUDIO_HW_CLK, words, 2, "the speakers' TDM bit clock");
+		prm_clock_on = false;
+		return done;
+	}
+	done = prm_ask(true, PARAM_ID_RSC_AUDIO_HW_CLK, words, 5, "the speakers' TDM bit clock (12.288 MHz)");
+	prm_clock_on = done;
+	return done;
+}
+
+/* What was asked of the resource manager, given back (before the DSP is stopped). */
+static void
+prm_release(void)
+{
+	if (!glink.channel[CHANNEL_GPR].open) {
+		return;
+	}
+	if (prm_clock_on) {
+		prm_speaker_clock(false);
+	}
+	speaker_pins(false);
+	for (uint32_t core = PRM_HW_CORE_DCODEC; core >= PRM_HW_CORE_LPASS; core--) {
+		if (prm_core_voted[core]) {
+			prm_core(core, false);
+		}
+	}
+}
+
+static bool
+step_prm(void)
+{
+	if (!glink.channel[CHANNEL_GPR].open) {
+		return true;                    /* (a DSP of the older kind has no such manager: its clocks are the AFE's) */
+	}
+	announce("ask the DSP's resource manager for LPASS's two votes, give the island's pins 6 to 9 to the speakers' TDM "
+	    "interface, and ask for its bit clock");
+	if (!prm_core(PRM_HW_CORE_LPASS, true) || !prm_core(PRM_HW_CORE_DCODEC, true)) {
+		printf("adsp: %u: without both votes the island's registers are not read\n", step);
+		return false;
+	}
+	speaker_pins(true);
+	/* (a test: adsp_own_clock=1 asks for the bit clock here; without it the interface's module is left to) */
+	return option("adsp_own_clock") ? prm_speaker_clock(true) : true;
+}
+
+/* ---- step 13: a playback graph in the DSP's audio framework ------------------------------------------ */
+
+/*
+ * With AudioReach nothing in the DSP is wired up in advance: the audio processing manager (APM, GPR port 1) is
+ * handed a graph -- sub-graphs, the containers (threads) their modules run in, the modules by number and
+ * instance, their ports and the connections between them -- then each module's settings, and is told to prepare
+ * and start it (Linux: sound/soc/qcom/qdsp6/audioreach.c and audioreach.h, q6apm.c; Android builds the same from
+ * its calibration database, where this phone's own numbers are from). The one here is the least that plays:
+ *
+ *   our memory -> [WR_SHARED_MEM_EP -> PCM_DEC -> PCM_CNV] -> [TDM sink] -> island pins 6 to 9 -> the amplifiers
+ *
+ * in two containers, a sub-graph each. What we write is 96 kHz, 16 bits, two channels; the converter makes it the
+ * bus's 32 bits. The TDM sink (module 0x0700100e here) is the island's interface: kind 3, index 0 (primary), its
+ * own clock and sync, 4 slots of 32 bits a frame, the first two carrying the channels, the data a bit after the
+ * sync -- the 28 bytes Android's database has for this phone (Linux's param_id_tdm_intf_cfg with a word more
+ * after the interface's index: 2 there, 0 here, since 2 is refused), after the two further parameters that
+ * database gives the module.
+ *
+ * A command is the header of four words that the resource manager's takes too, then parameters: a module's
+ * instance (1: the manager itself), the parameter, its size, an error word, its payload padded to eight bytes.
+ */
+#define APM_CMD_GRAPH_OPEN              0x01001000u
+#define APM_CMD_GRAPH_PREPARE           0x01001001u
+#define APM_CMD_GRAPH_START             0x01001002u
+#define APM_CMD_GRAPH_STOP              0x01001003u
+#define APM_CMD_GRAPH_CLOSE             0x01001004u
+#define APM_CMD_SET_CFG                 0x01001006u
+#define APM_PARAM_ID_CONTAINER_CONFIG   0x08001000u
+#define APM_PARAM_ID_SUB_GRAPH_CONFIG   0x08001001u
+#define APM_PARAM_ID_MODULES_LIST       0x08001002u
+#define APM_PARAM_ID_MODULE_PROP        0x08001003u
+#define APM_PARAM_ID_MODULE_CONN        0x08001004u
+#define APM_PARAM_ID_SUB_GRAPH_LIST     0x08001005u
+#define APM_SUB_GRAPH_PROP_PERF_MODE    0x0800100eu     /* 1 low power, 2 low latency */
+#define APM_SUB_GRAPH_PROP_DIRECTION    0x0800100fu     /* 1 capture, 2 playback */
+#define APM_SUB_GRAPH_PROP_SCENARIO     0x08001010u     /* 1 audio playback */
+#define APM_CONTAINER_PROP_CAPABILITY   0x08001011u     /* the container's type: */
+#define APM_CONTAINER_TYPE_GENERIC      0x0b001001u     /* ... the general one (0x0b001000: the specialised, for effects) */
+#define APM_CONTAINER_PROP_POSITION     0x08001012u     /* 1 a stream's, 4 a device's */
+#define APM_CONTAINER_PROP_STACK        0x08001013u
+#define APM_CONTAINER_PROP_DOMAIN       0x08001014u     /* 2 the audio DSP */
+#define APM_MODULE_PROP_PORTS           0x08001015u     /* how many inputs, how many outputs */
+#define MODULE_WR_SHARED_MEM_EP         0x07001000u
+#define MODULE_PCM_CNV                  0x07001003u
+#define MODULE_PCM_DEC                  0x07001005u
+#define MODULE_TDM_SINK                 0x0700100eu
+#define PARAM_ID_PCM_OUTPUT_FORMAT      0x08001008u
+#define PARAM_ID_HW_EP_MF_CFG           0x08001017u
+#define PARAM_ID_HW_EP_FRAME_SIZE       0x08001018u
+#define PARAM_ID_TDM_INTF_CFG           0x0800101bu
+#define DATA_CMD_WR_EP_MEDIA_FORMAT     0x04001001u
+#define MEDIA_FMT_ID_PCM                0x09001000u
+#define DATA_FORMAT_FIXED_POINT         1
+
+#define SPEAKER_SUB_GRAPH               0x00006101u     /* the stream's: our memory to the converter */
+#define SPEAKER_SUB_GRAPH_DEVICE        0x00006102u     /* the device's: the interface */
+#define SPEAKER_CONTAINER_STREAM        0x00006201u
+#define SPEAKER_CONTAINER_DEVICE        0x00006202u
+#define SPEAKER_WR_EP                   0x00006001u
+#define SPEAKER_PCM_DEC                 0x00006002u
+#define SPEAKER_PCM_CNV                 0x00006003u
+#define SPEAKER_TDM                     0x00006004u
+#define SPEAKER_HZ                      96000u
+#define PORT_OUT                        1               /* a module's first output */
+#define PORT_IN                         2               /* a module's first input */
+
+static bool graph_open, graph_started;
+
+/* A command's words, gathered: the header's four first, then parameter after parameter. */
+struct apm_words {
+	uint32_t word[GPR_PAYLOAD_MAX / 4];
+	uint32_t count, parameter;              /* where the open parameter's header is */
+};
+
+static void
+apm_begin(struct apm_words *w)
+{
+	bzero(w, sizeof(*w));
+	w->count = 4;
+}
+
+static void
+apm_put(struct apm_words *w, uint32_t value)
+{
+	if (w->count < sizeof(w->word) / sizeof(w->word[0])) {
+		w->word[w->count++] = value;
+	}
+}
+
+static void
+apm_parameter(struct apm_words *w, uint32_t instance, uint32_t parameter)
+{
+	w->parameter = w->count;
+	apm_put(w, instance);
+	apm_put(w, parameter);
+	apm_put(w, 0);                          /* the size: at the end */
+	apm_put(w, 0);
+}
+
+static void
+apm_parameter_end(struct apm_words *w)
+{
+	w->word[w->parameter + 2] = (w->count - w->parameter - 4) * 4;
+	if (w->count & 1) {
+		apm_put(w, 0);                  /* (to eight bytes) */
+	}
+}
+
+/* The command sent, and what the manager says: true when it says 0. */
+static bool
+apm_send(struct apm_words *w, uint32_t opcode, const char *what)
+{
+	bool answered;
+
+	w->word[3] = (w->count - 4) * 4;
+	answered = hakios_adsp_gpr(GPR_PORT_APM, GPR_PORT_APM, 0, opcode, w->word, w->count * 4, 3000, NULL);
+	printf("adsp: %u: the graphs' manager, %s (%u bytes): %s (opcode %#x: %#x %#x)\n", step, what, w->count * 4,
+	    !answered ? "NO ANSWER" : gpr_answer.opcode == GPR_BASIC_RSP_RESULT && gpr_answer.words[1] == 0 ? "done" : "REFUSED",
+	    gpr_answer.opcode, gpr_answer.words[0], gpr_answer.words[1]);
+	return answered && gpr_answer.opcode == GPR_BASIC_RSP_RESULT && gpr_answer.words[1] == 0;
+}
+
+static bool
+apm_sub_graph(uint32_t opcode, uint32_t sub_graph, const char *what)
+{
+	static struct apm_words w;
+
+	apm_begin(&w);
+	apm_parameter(&w, GPR_PORT_APM, APM_PARAM_ID_SUB_GRAPH_LIST);
+	if (sub_graph == 0) {                   /* (both) */
+		apm_put(&w, 2);
+		apm_put(&w, SPEAKER_SUB_GRAPH_DEVICE);
+		apm_put(&w, SPEAKER_SUB_GRAPH);
+	} else {
+		apm_put(&w, 1);
+		apm_put(&w, sub_graph);
+	}
+	apm_parameter_end(&w);
+	return apm_send(&w, opcode, what);
+}
+
+static void
+apm_container(struct apm_words *w, uint32_t container, uint32_t capability, uint32_t position)
+{
+	apm_put(w, container);
+	apm_put(w, 4);
+	apm_put(w, APM_CONTAINER_PROP_CAPABILITY);
+	apm_put(w, 8);
+	apm_put(w, 1);
+	apm_put(w, capability);
+	apm_put(w, APM_CONTAINER_PROP_POSITION);
+	apm_put(w, 4);
+	apm_put(w, position);
+	apm_put(w, APM_CONTAINER_PROP_STACK);
+	apm_put(w, 4);
+	apm_put(w, 8192);
+	apm_put(w, APM_CONTAINER_PROP_DOMAIN);
+	apm_put(w, 4);
+	apm_put(w, 2);
+}
+
+/* A module's PCM format out: so many bits a sample, in words of so many, two channels (left 1, right 2). */
+static void
+apm_pcm_format(struct apm_words *w, uint32_t instance, uint32_t bits, uint32_t word_bits)
+{
+	apm_parameter(w, instance, PARAM_ID_PCM_OUTPUT_FORMAT);
+	apm_put(w, DATA_FORMAT_FIXED_POINT);
+	apm_put(w, MEDIA_FMT_ID_PCM);
+	apm_put(w, 20);                                 /* what follows: eight words of sixteen bits, and the channels */
+	apm_put(w, bits | 1u << 16);                    /* the width; aligned to the low end */
+	apm_put(w, word_bits | (bits - 1) << 16);       /* the word; the Q factor */
+	apm_put(w, 1u | 3u << 16);                      /* little endian; a channel after the other, in words of their own */
+	apm_put(w, 0 | 2u << 16);                       /* (reserved); two channels */
+	apm_put(w, 1u | 2u << 8);                       /* left, right */
+	apm_parameter_end(w);
+}
+
+void
+hakios_adsp_speaker_graph_stop(void)
+{
+	if (graph_started && glink.channel[CHANNEL_GPR].open) {
+		apm_sub_graph(APM_CMD_GRAPH_STOP, 0, "told to stop the speakers' graph");
+	}
+	graph_started = false;
+}
+
+bool
+hakios_adsp_speaker_graph(void)
+{
+	return glink.channel[CHANNEL_GPR].open && graph_started;
+}
+
+static void
+graph_close(void)
+{
+	if (!glink.channel[CHANNEL_GPR].open) {
+		graph_open = graph_started = false;
+		return;
+	}
+	hakios_adsp_speaker_graph_stop();
+	tone_over();
+	if (graph_open) {
+		apm_sub_graph(APM_CMD_GRAPH_CLOSE, 0, "told to close the speakers' graph");
+		graph_open = false;
+	}
+}
+
+static bool
+step_graph(void)
+{
+	static struct apm_words w;
+	uint32_t format[11];
+	bool settings = true, tdm = false;
+
+	if (!glink.channel[CHANNEL_GPR].open) {
+		return true;                    /* (the older kind of DSP: its sound is hakios.sound.c's) */
+	}
+	announce("hand the DSP's audio framework a playback graph (our memory, a decoder, a converter, the island's TDM "
+	    "interface), set its modules up, and have it prepared and started");
+	apm_begin(&w);
+	apm_parameter(&w, GPR_PORT_APM, APM_PARAM_ID_SUB_GRAPH_CONFIG);
+	apm_put(&w, 2);
+	for (uint32_t g = 0; g < 2; g++) {
+		apm_put(&w, SPEAKER_SUB_GRAPH + g);
+		apm_put(&w, 3);
+		apm_put(&w, APM_SUB_GRAPH_PROP_PERF_MODE);
+		apm_put(&w, 4);
+		apm_put(&w, 2);
+		apm_put(&w, APM_SUB_GRAPH_PROP_DIRECTION);
+		apm_put(&w, 4);
+		apm_put(&w, 2);
+		apm_put(&w, APM_SUB_GRAPH_PROP_SCENARIO);
+		apm_put(&w, 4);
+		apm_put(&w, 1);
+	}
+	apm_parameter_end(&w);
+	apm_parameter(&w, GPR_PORT_APM, APM_PARAM_ID_CONTAINER_CONFIG);
+	apm_put(&w, 2);
+	apm_container(&w, SPEAKER_CONTAINER_STREAM, APM_CONTAINER_TYPE_GENERIC, 1);
+	apm_container(&w, SPEAKER_CONTAINER_DEVICE, APM_CONTAINER_TYPE_GENERIC, 4);
+	apm_parameter_end(&w);
+	apm_parameter(&w, GPR_PORT_APM, APM_PARAM_ID_MODULES_LIST);
+	apm_put(&w, 2);
+	apm_put(&w, SPEAKER_SUB_GRAPH);
+	apm_put(&w, SPEAKER_CONTAINER_STREAM);
+	apm_put(&w, 3);
+	apm_put(&w, MODULE_WR_SHARED_MEM_EP);
+	apm_put(&w, SPEAKER_WR_EP);
+	apm_put(&w, MODULE_PCM_DEC);
+	apm_put(&w, SPEAKER_PCM_DEC);
+	apm_put(&w, MODULE_PCM_CNV);
+	apm_put(&w, SPEAKER_PCM_CNV);
+	apm_put(&w, SPEAKER_SUB_GRAPH_DEVICE);
+	apm_put(&w, SPEAKER_CONTAINER_DEVICE);
+	apm_put(&w, 1);
+	apm_put(&w, MODULE_TDM_SINK);
+	apm_put(&w, SPEAKER_TDM);
+	apm_parameter_end(&w);
+	apm_parameter(&w, GPR_PORT_APM, APM_PARAM_ID_MODULE_PROP);
+	apm_put(&w, 4);
+	for (uint32_t m = 0; m < 4; m++) {
+		apm_put(&w, SPEAKER_WR_EP + m);
+		apm_put(&w, 1);
+		apm_put(&w, APM_MODULE_PROP_PORTS);
+		apm_put(&w, 8);
+		apm_put(&w, 1);                         /* (the first module's input is our memory, yet it counts one) */
+		apm_put(&w, m == 3 ? 0 : 1);
+	}
+	apm_parameter_end(&w);
+	apm_parameter(&w, GPR_PORT_APM, APM_PARAM_ID_MODULE_CONN);
+	apm_put(&w, 3);
+	for (uint32_t m = 0; m < 3; m++) {
+		apm_put(&w, SPEAKER_WR_EP + m);
+		apm_put(&w, PORT_OUT);
+		apm_put(&w, SPEAKER_WR_EP + m + 1);
+		apm_put(&w, PORT_IN);
+	}
+	apm_parameter_end(&w);
+	if (!apm_send(&w, APM_CMD_GRAPH_OPEN, "handed the speakers' graph")) {
+		return false;
+	}
+	graph_open = true;
+
+	/* (a setting a command, so that a refusal names its setting) */
+	apm_begin(&w);
+	apm_pcm_format(&w, SPEAKER_PCM_DEC, 16, 16);
+	settings = apm_send(&w, APM_CMD_SET_CFG, "given the decoder's format out") && settings;
+	apm_begin(&w);
+	apm_pcm_format(&w, SPEAKER_PCM_CNV, 32, 32);
+	settings = apm_send(&w, APM_CMD_SET_CFG, "given the converter's format out") && settings;
+	apm_begin(&w);
+	apm_parameter(&w, SPEAKER_TDM, PARAM_ID_HW_EP_MF_CFG);
+	apm_put(&w, SPEAKER_HZ);
+	apm_put(&w, 32u | 2u << 16);                    /* bits; channels */
+	apm_put(&w, DATA_FORMAT_FIXED_POINT);
+	apm_parameter_end(&w);
+	settings = apm_send(&w, APM_CMD_SET_CFG, "given the interface's sound format") && settings;
+	apm_begin(&w);
+	apm_parameter(&w, SPEAKER_TDM, PARAM_ID_HW_EP_FRAME_SIZE);
+	apm_put(&w, 1);
+	apm_parameter_end(&w);
+	settings = apm_send(&w, APM_CMD_SET_CFG, "given the interface's frame size") && settings;
+	/* two that Android's calibration database gives this module, as it has them, before the interface's own */
+	apm_begin(&w);
+	apm_parameter(&w, SPEAKER_TDM, 0x0800106au);
+	apm_put(&w, 2);
+	apm_parameter_end(&w);
+	tdm = apm_send(&w, APM_CMD_SET_CFG, "given the interface's parameter 0x0800106a");
+	apm_begin(&w);
+	apm_parameter(&w, SPEAKER_TDM, 0x0800113cu);
+	apm_put(&w, 0);
+	apm_put(&w, 0);
+	apm_put(&w, 4);
+	apm_put(&w, 0);
+	apm_parameter_end(&w);
+	tdm = apm_send(&w, APM_CMD_SET_CFG, "given the interface's parameter 0x0800113c") && tdm;
+	apm_begin(&w);
+	apm_parameter(&w, SPEAKER_TDM, PARAM_ID_TDM_INTF_CFG);
+	apm_put(&w, 3u | 0u << 16);                     /* the interface: the island's (kind 3), the primary one */
+	apm_put(&w, 0);                                 /* (Android's database has 2 here, which is refused; 0 is taken) */
+	apm_put(&w, 1u | 1u << 16);                     /* the sync is ours; the data line driven */
+	apm_put(&w, 3);                                 /* the slots in use: the first two */
+	apm_put(&w, 4u | 32u << 16);                    /* slots a frame; bits a slot */
+	apm_put(&w, 0);                                 /* the sync's kind; not inverted */
+	apm_put(&w, 1);                                 /* the data a bit after the sync */
+	apm_parameter_end(&w);
+	tdm = apm_send(&w, APM_CMD_SET_CFG, "given the interface's TDM settings") && tdm;
+	settings = settings && tdm;
+	if (!settings) {
+		return false;
+	}
+
+	/* what our memory will carry, told to the module that reads it (a data command, to the module itself) */
+	format[0] = DATA_FORMAT_FIXED_POINT;
+	format[1] = MEDIA_FMT_ID_PCM;
+	format[2] = 20;
+	format[3] = SPEAKER_HZ;
+	format[4] = 16u | 1u << 16;                     /* the width; aligned to the low end */
+	format[5] = 16u | 15u << 16;                    /* the word; the Q factor */
+	format[6] = 1u | 2u << 16;                      /* little endian; two channels */
+	format[7] = 1u | 2u << 8;                       /* left, right */
+	if (!hakios_adsp_gpr(SPEAKER_WR_EP, SPEAKER_WR_EP, 0, DATA_CMD_WR_EP_MEDIA_FORMAT, format, 32, 0, NULL)) {
+		printf("adsp: %u: the format of our memory's sound was not sent\n", step);
+		return false;
+	}
+	sleep_ms(50);
+	{
+		/* (the interface's half first, then the stream's: a refusal then names its half) */
+		bool device = apm_sub_graph(APM_CMD_GRAPH_PREPARE, SPEAKER_SUB_GRAPH_DEVICE, "told to prepare the interface's half") &&
+		    apm_sub_graph(APM_CMD_GRAPH_START, SPEAKER_SUB_GRAPH_DEVICE, "told to start the interface's half");
+		bool stream = apm_sub_graph(APM_CMD_GRAPH_PREPARE, SPEAKER_SUB_GRAPH, "told to prepare the stream's half") &&
+		    apm_sub_graph(APM_CMD_GRAPH_START, SPEAKER_SUB_GRAPH, "told to start the stream's half");
+
+		graph_started = device || stream;
+		if (!device || !stream) {
+			return false;
+		}
+	}
+	sleep_ms(500);                          /* (what the modules say of it, if anything, in the log) */
+	return true;
+}
+
+/* ---- the graph's memory and data, for the sound (hakios.sound.c) ----------------------------------- */
+
+static bool keep;                       /* (below, with the steps' end) */
+
+bool
+hakios_adsp_speaker_map(uint64_t dsp_address, uint32_t bytes, uint32_t *handle)
+{
+	uint32_t map[5] = { 3u | 1u << 16, 0, (uint32_t)dsp_address, (uint32_t)(dsp_address >> 32), bytes };
+	struct hakios_apr_answer answer;
+
+	/* (pool 3: shared memory in pages of 4 KB; one region; addresses, not offsets) */
+	if (!hakios_adsp_gpr(GPR_PORT_APM, GPR_PORT_APM, 0, 0x0100100cu, map, sizeof(map), 3000, &answer) ||
+	    answer.opcode != 0x02001001u) {
+		return false;
+	}
+	*handle = answer.words[0];
+	return true;
+}
+
+void
+hakios_adsp_speaker_unmap(uint32_t handle)
+{
+	hakios_adsp_gpr(GPR_PORT_APM, GPR_PORT_APM, 0, 0x0100100du, &handle, sizeof(handle), 3000, NULL);
+}
+
+bool
+hakios_adsp_speaker_write(uint64_t dsp_address, uint32_t handle, uint32_t bytes, uint32_t token)
+{
+	uint32_t write[11] = { (uint32_t)dsp_address, (uint32_t)(dsp_address >> 32), handle, bytes, 0, 0, 0, 0, 0, 0, 0 };
+
+	return hakios_adsp_gpr(SPEAKER_WR_EP, SPEAKER_WR_EP, token, 0x0400100au, write, sizeof(write), 0, NULL);
+}
+
+/* ---- a test tone through the graph ------------------------------------------------------------------ */
+
+/*
+ * The graph's first module reads memory of ours: the block the SMMU shows the DSP (hakios.sound.c), told to the
+ * graphs' manager once (it answers with a handle), then handed over period by period with a data command to the
+ * module; for every period the module says when it has taken it. 1 kHz at -20 dBFS, both channels, 96 kHz and 16
+ * bits: 10 ms a period. The amplifiers are not touched: what is looked at is whether the DSP takes the periods
+ * at the rate the bus plays them.
+ */
+#define APM_CMD_SHARED_MEM_MAP          0x0100100cu
+#define APM_CMD_RSP_SHARED_MEM_MAP      0x02001001u
+#define APM_CMD_SHARED_MEM_UNMAP        0x0100100du
+#define APM_MEMORY_POOL_SHARED_4K       3
+#define DATA_CMD_WR_EP_BUFFER           0x0400100au     /* (version 2) */
+#define DATA_RSP_WR_EP_BUFFER_DONE      0x05001004u
+#define DATA_RSP_WR_EP_BUFFER_DONE_OLD  0x05001000u
+#define TONE_PERIODS                    8
+#define TONE_FRAMES                     960             /* 10 ms */
+#define TONE_BYTES                      (TONE_FRAMES * 4)
+#define TONE_TOKEN                      0x01000000u     /* (the questions' own tokens stay under it) */
+
+static uintptr_t tone_memory;
+static uint64_t tone_address;
+static uint32_t tone_handle, tone_returned, tone_done, tone_refused, tone_status, tone_at;
+static bool tone_has_memory, tone_mapped;
+
+/* 1 kHz at 48 kHz, -20 dBFS (a peak of 3277): one cycle; at 96 kHz every second sample lies between two */
+static const int16_t tone_cycle[48] = {
+	0, 428, 848, 1254, 1638, 1995, 2317, 2600, 2838, 3028, 3165, 3249,
+	3277, 3249, 3165, 3028, 2838, 2600, 2317, 1995, 1638, 1254, 848, 428,
+	0, -428, -848, -1254, -1638, -1995, -2317, -2600, -2838, -3028, -3165, -3249,
+	-3277, -3249, -3165, -3028, -2838, -2600, -2317, -1995, -1638, -1254, -848, -428,
+};
+
+static bool
+tone_events(__unused uint32_t from_port, __unused uint32_t to_port, uint32_t opcode, uint32_t token, const uint32_t *payload,
+    uint32_t bytes)
+{
+	if (opcode != DATA_RSP_WR_EP_BUFFER_DONE && opcode != DATA_RSP_WR_EP_BUFFER_DONE_OLD) {
+		return false;
+	}
+	if (bytes >= 16 && payload[3] != 0) {
+		tone_status = payload[3];
+		OSIncrementAtomic(&tone_refused);
+	}
+	OSIncrementAtomic(&tone_done);
+	OSBitOrAtomic(1u << (token & 31), &tone_returned);
+	return true;
+}
+
+static void
+tone_fill(unsigned period, bool silent)
+{
+	int16_t *samples = (int16_t *)(tone_memory + 4096 * period);
+
+	for (unsigned frame = 0; frame < TONE_FRAMES; frame++, tone_at++) {
+		int16_t sample = silent ? 0 : (int16_t)((tone_cycle[tone_at / 2 % 48] + tone_cycle[(tone_at + 1) / 2 % 48]) / 2);
+
+		samples[2 * frame] = sample;
+		samples[2 * frame + 1] = sample;
+	}
+	for (vm_offset_t line = (vm_offset_t)samples; line < (vm_offset_t)samples + TONE_BYTES; line += 64) {
+		__asm__ volatile ("dc cvac, %0" : : "r" (line));        /* the DSP reads memory, not our caches */
+	}
+	__asm__ volatile ("dsb sy");
+}
+
+static bool
+tone_write(unsigned period)
+{
+	uint64_t address = tone_address + 4096 * period;
+	uint32_t write[11] = { (uint32_t)address, (uint32_t)(address >> 32), tone_handle, TONE_BYTES, 0, 0, 0, 0, 0, 0, 0 };
+
+	return hakios_adsp_gpr(SPEAKER_WR_EP, SPEAKER_WR_EP, TONE_TOKEN | period, DATA_CMD_WR_EP_BUFFER, write, sizeof(write), 0,
+	           NULL);
+}
+
+/* What the tone took is given back: after the graph has stopped, before it is closed. */
+static void
+tone_over(void)
+{
+	if (tone_mapped) {
+		uint32_t unmap[1] = { tone_handle };
+		bool answered = hakios_adsp_gpr(GPR_PORT_APM, GPR_PORT_APM, 0, APM_CMD_SHARED_MEM_UNMAP, unmap, sizeof(unmap), 3000, NULL);
+
+		printf("adsp: the graphs' manager, told to forget our memory: %s (%#x)\n", !answered ? "NO ANSWER" :
+		    gpr_answer.words[1] == 0 ? "done" : "REFUSED", gpr_answer.words[1]);
+		tone_mapped = false;
+	}
+	if (tone_has_memory) {
+		hakios_adsp_gpr_events(NULL);
+		hakios_audio_dsp_memory_put();
+		tone_has_memory = false;
+	}
+}
+
+/* The tone for `seconds', period after period as the DSP gives them back; true when it took them at the bus's rate. */
+static bool
+tone_play(uint32_t seconds)
+{
+	uint32_t sent = 0, looks = 0;
+	uint64_t began, last;
+	bool over = false;
+
+	tone_returned = tone_done = tone_refused = tone_status = tone_at = 0;
+	for (unsigned p = 0; p < TONE_PERIODS; p++) {
+		tone_fill(p, false);
+	}
+	began = last = now_us();
+	for (unsigned p = 0; p < TONE_PERIODS; p++) {
+		if (!tone_write(p)) {
+			printf("adsp: %u: the write of period %u could not be sent\n", step, p);
+			return false;
+		}
+		sent++;
+	}
+	for (;;) {
+		uint32_t back = tone_returned;
+		uint64_t now = now_us();
+
+		if (back != 0) {
+			OSBitAndAtomic(~back, &tone_returned);
+			for (unsigned p = 0; p < TONE_PERIODS && !over; p++) {
+				if (!(back & 1u << p)) {
+					continue;
+				}
+				tone_fill(p, false);
+				if (!tone_write(p)) {
+					printf("adsp: %u: the write of period %u could not be sent\n", step, p);
+					over = true;
+					break;
+				}
+				sent++;
+			}
+		}
+		if (!over && now - began >= seconds * 1000000ull) {
+			over = true;
+		}
+		if (over && tone_done >= sent) {
+			break;
+		}
+		if (now - began > seconds * 1000000ull + 2000000) {
+			printf("adsp: %u: THE DSP HAS NOT GIVEN EVERY PERIOD BACK 2 s after the end (%u of %u)\n", step, tone_done, sent);
+			break;
+		}
+		if (now - last >= 500000 && looks < 8) {
+			printf("adsp: %u: after %llu ms: %u periods written, %u taken (%u refused, last status %#x)\n", step,
+			    (now - began) / 1000, sent, tone_done, tone_refused, tone_status);
+			last = now;
+			looks++;
+		}
+		sleep_ms(1);
+	}
+	{
+		uint64_t ms = (now_us() - began) / 1000;
+		uint32_t rate = ms != 0 ? (uint32_t)((uint64_t)tone_done * TONE_FRAMES * 1000 / ms) : 0;
+		bool ok = tone_done >= sent && tone_refused == 0 && rate > SPEAKER_HZ * 9 / 10 && rate < SPEAKER_HZ * 11 / 10;
+
+		printf("adsp: %u: %u periods written, %u taken in %llu ms, %u refused (status %#x): %u frames a second -- %s\n", step,
+		    sent, tone_done, ms, tone_refused, tone_status, rate, ok ? "THE DSP PLAYS OUR MEMORY AT THE BUS'S RATE" :
+		    "NOT AS IT SHOULD BE");
+		return ok;
+	}
+}
+
+static bool
+step_tone(void)
+{
+	uint32_t map[5], bytes = 0, seconds = 2;
+	bool answered;
+
+	if (!glink.channel[CHANNEL_GPR].open || keep) {
+		return true;                    /* (a test: not when the DSP stays on for the system's own sound) */
+	}
+	if (!graph_started) {
+		return false;
+	}
+	PE_parse_boot_argn("adsp_tone_secs", &seconds, sizeof(seconds));
+	if (seconds > 10) {
+		seconds = 10;
+	}
+	announce("show the DSP memory of ours, and write a test tone from it into the graph (1 kHz at -20 dBFS, the amplifiers "
+	    "off)");
+	if (!hakios_audio_dsp_memory(&tone_memory, &tone_address, &bytes) || bytes < TONE_PERIODS * 4096) {
+		printf("adsp: %u: no memory that the DSP sees\n", step);
+		return false;
+	}
+	tone_has_memory = true;
+	printf("adsp: %u: %u KB of ours, to the DSP at %#llx\n", step, bytes / 1024, tone_address);
+	map[0] = APM_MEMORY_POOL_SHARED_4K | 1u << 16;          /* the pool; one region */
+	map[1] = 0;                                             /* (addresses, not offsets) */
+	map[2] = (uint32_t)tone_address;
+	map[3] = (uint32_t)(tone_address >> 32);
+	map[4] = bytes;
+	answered = hakios_adsp_gpr(GPR_PORT_APM, GPR_PORT_APM, 0, APM_CMD_SHARED_MEM_MAP, map, sizeof(map), 3000, NULL);
+	printf("adsp: %u: the graphs' manager, shown our memory: %s (opcode %#x: %#x %#x)\n", step, !answered ? "NO ANSWER" :
+	    gpr_answer.opcode == APM_CMD_RSP_SHARED_MEM_MAP ? "TAKEN, a handle given" : "REFUSED", gpr_answer.opcode,
+	    gpr_answer.words[0], gpr_answer.words[1]);
+	if (!answered || gpr_answer.opcode != APM_CMD_RSP_SHARED_MEM_MAP) {
+		return false;
+	}
+	tone_handle = gpr_answer.words[0];
+	tone_mapped = true;
+	tone_returned = tone_done = tone_refused = tone_status = tone_at = 0;
+	hakios_adsp_gpr_events(tone_events);
+	tone_fill(0, false);
+	return tone_play(seconds);
+}
+
+/* ---- the amplifiers, with the tone ------------------------------------------------------------------- */
+
+/*
+ * The two amplifiers (hakios.speaker.c) set up from Android's Music profile while the graph runs -- the bus's
+ * clock is what they lock to --, started at the lowest volume, faded in to adsp_below eighths of a dB under
+ * Android's own level (default 160: 20 dB under), the tone for adsp_tone_secs, and powered down again. Audible.
+ */
+static bool speakers_on;
+
+static void
+speakers_off(void)
+{
+	if (speakers_on) {
+		hakios_speaker_stop();
+		speakers_on = false;
+	}
+}
+
+static bool
+step_speakers(void)
+{
+	const uint8_t *acf;
+	uint64_t acf_size = 0;
+	uint32_t seconds = 2, below = 160;
+	bool ok, ours = false;
+
+	if (!glink.channel[CHANNEL_GPR].open || keep) {
+		return true;                    /* (a test, as the step before) */
+	}
+	if (!graph_started || !tone_mapped) {
+		return false;
+	}
+	PE_parse_boot_argn("adsp_tone_secs", &seconds, sizeof(seconds));
+	PE_parse_boot_argn("adsp_below", &below, sizeof(below));
+	if (seconds > 10) {
+		seconds = 10;
+	}
+	announce("set the two amplifiers up from Android's Music profile, start them, and play the tone through the speakers");
+	acf = hakios_image_file("fw", "aw882xx_acf.bin", &acf_size, NULL);     /* (the image's own memory: not given back) */
+	if (acf == NULL) {
+		acf = hakios_adsp_fw_file("aw882xx_acf.bin", &acf_size);
+		ours = acf != NULL;
+	}
+	if (acf == NULL) {
+		printf("adsp: %u: no /fw/aw882xx_acf.bin (the phone's /vendor/etc/aw882xx_acf.bin)\n", step);
+		return false;
+	}
+	speakers_on = true;
+	ok = hakios_speaker_prepare(acf, acf_size) && hakios_speaker_start();
+	if (ours) {
+		hakios_adsp_fw_free(acf, acf_size);
+	}
+	if (ok) {
+		ok = hakios_speaker_volume(below, 50);
+	}
+	if (ok) {
+		printf("adsp: %u: THE TONE PLAYS NOW for %u s: 1 kHz at -20 dBFS, both speakers, %u.%03u dB under Android's level\n",
+		    step, seconds, below / 8, below % 8 * 125);
+		ok = tone_play(seconds);
+		printf("adsp: %u: the amplifiers after the tone: %s\n", step, hakios_speaker_healthy() ? "healthy" : "NOT HEALTHY");
+	}
+	speakers_off();
+	return ok;
+}
+
 /* ---- the steps, and their end ----------------------------------------------------------------------- */
 
 static bool (*const steps[STEPS])(void) = {
 	step_survey, step_firmware, step_mailbox, step_header, step_image, step_our_item, step_start, step_queues, step_link,
-	step_qrtr, step_apr,
+	step_qrtr, step_apr, step_prm, step_graph, step_tone, step_speakers,
 };
 
 static bool keep;                       /* the DSP and the link stay up while the system runs (adsp_keep, adsp=1) */
@@ -3261,11 +4349,19 @@ whole_thread(__unused void *parameter, __unused wait_result_t result)
 void
 hakios_adsp_init(void)
 {
-	uint32_t on = 0;
+	uint32_t on = 0, garnet = 0;
 	thread_t thread;
 
+	/*
+	 * (On garnet -- garnet_touch=1 says the phone is that one -- the DSP is brought up without being asked for:
+	 * its speakers have no other way, and the battery is read through it. adsp=0 leaves it alone.)
+	 */
+	if (PE_parse_boot_argn("garnet_touch", &garnet, sizeof(garnet)) && garnet != 0) {
+		on = 1;
+	}
 	PE_parse_boot_argn("adsp_step", &last_step, sizeof(last_step));
-	if (last_step == 0 && (!PE_parse_boot_argn("adsp", &on, sizeof(on)) || on != 1)) {
+	PE_parse_boot_argn("adsp", &on, sizeof(on));
+	if (last_step == 0 && on != 1) {
 		return;
 	}
 	if (pe_arm_get_soc_base_phys() != HAKIOS_SOC_BASE) {

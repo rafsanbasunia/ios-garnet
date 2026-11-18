@@ -2,7 +2,7 @@
 
 Made by `tools/boot-args.py --markdown`; CI fails if it is out of date with the source (`tools/boot-args.py --check`).
 
-Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **380 arguments**: 308 read by the kernel, 16 by the loader, 69 by user space (one is read in more than one place).
+Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **383 arguments**: 311 read by the kernel, 16 by the loader, 69 by user space (one is read in more than one place).
 
 This is a catalogue of what exists and who reads it, not a manual. What an argument means is in the head of the file that reads it. The stable switches have a symbol in the configuration (`tools/hakios-config.py help SYMBOL`, `docs/configs.md`); the rest are the knobs of bring-up (a driver's steps, pauses, traces, test modes) and can change with the driver. Any of them can be given in a configuration with `CONFIG_BOOTARGS="name=value ..."`, which checks that each name is in this list. What the arguments of the two Metal paths do: [Metal on the Adreno](reference/metal.md#boot-arguments).
 
@@ -198,19 +198,22 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `soc_pas_mpss` | K | `hakios.mpss.c` | `CONFIG_SOC_PAS_MPSS` |  |
 | `soc_smem` | K | `hakios.mpss.c`, `hakios.socinfo.c` | `CONFIG_SOC_SMEM` |  |
 
-## Audio and battery (37)
+## Audio and battery (40)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
 | `adsp` | K | `hakios.adsp.c` | `CONFIG_ADSP` |  |
 | `adsp_again` | K | `hakios.adsp.c` | `CONFIG_ADSP_AGAIN` |  |
 | `adsp_apr_wait` | K | `hakios.adsp.c` | `CONFIG_ADSP_APR_WAIT` |  |
+| `adsp_below` | K | `hakios.adsp.c` | `CONFIG_ADSP_BELOW` |  |
 | `adsp_keep` | K | `hakios.adsp.c` | `CONFIG_ADSP_KEEP` |  |
 | `adsp_listen` | K | `hakios.adsp.c` | `CONFIG_ADSP_LISTEN` |  |
 | `adsp_new` | K | `hakios.adsp.c` | `CONFIG_ADSP_NEW` |  |
+| `adsp_own_clock` | K | `hakios.adsp.c` | `CONFIG_ADSP_OWN_CLOCK` |  |
 | `adsp_pause` | K | `hakios.adsp.c` | `CONFIG_ADSP_PAUSE` |  |
 | `adsp_return` | K | `hakios.adsp.c` | `CONFIG_ADSP_RETURN` |  |
 | `adsp_step` | K | `hakios.adsp.c` | `CONFIG_ADSP_STEP` |  |
+| `adsp_tone_secs` | K | `hakios.adsp.c` | `CONFIG_ADSP_TONE_SECS` |  |
 | `adsp_wait` | K | `hakios.adsp.c` | `CONFIG_ADSP_WAIT` |  |
 | `battery` | KL | `hakios.adsp.c`, `hakios.battery.c`, `loader.c` | `CONFIG_BATTERY` |  |
 | `battery_shared_pa` | K | `hakios.battery.c` |  | the loader (the address of its charger page) |
@@ -219,7 +222,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `battmgr` | K | `hakios.adsp.c` | `CONFIG_BATTMGR` |  |
 | `garnet_buttons` | K | `hakios.buttons.c`, `hakios.cpufreq.c`, `hakios.speaker.c` | `CONFIG_GARNET_BUTTONS` |  |
 | `garnet_speaker` | K | `hakios.speaker.c` | `CONFIG_GARNET_SPEAKER` |  |
-| `garnet_touch` | K | `hakios.buttons.c`, `hakios.cpufreq.c`, `hakios.focaltech.c`, `hakios.speaker.c` | `CONFIG_GARNET_TOUCH` |  |
+| `garnet_touch` | K | `hakios.adsp.c`, `hakios.buttons.c`, `hakios.cpufreq.c`, `hakios.focaltech.c`, `hakios.speaker.c` | `CONFIG_GARNET_TOUCH` |  |
 | `mic` | K | `hakios.mic.c` | `CONFIG_MIC` |  |
 | `mic_adc` | K | `hakios.mic.c` | `CONFIG_MIC_ADC` |  |
 | `mic_input` | K | `hakios.mic.c` | `CONFIG_MIC_INPUT` |  |

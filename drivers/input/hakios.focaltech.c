@@ -1476,6 +1476,20 @@ focaltech_poll(void)
 		if (bad++ < 8) {
 			loader_log_line("focaltech: SPI read failed for touch report\n");
 		}
+		/*
+		 * The pins are driven by hand, and somebody else may put one back as it was at reset: when the audio DSP
+		 * is started the chip select (pin 13) loses its output driver, and no report can be read from then on.
+		 * So the pins are set up again at the first failure and then at every 64th (about once a second).
+		 */
+		if (spi_transfer == bitbang_transfer && (bad == 1 || bad % 64 == 0)) {
+			gpio_output(PIN_CS, true, PULL_NONE, 6);
+			gpio_output(PIN_CLK, false, PULL_NONE, 6);
+			gpio_output(bitbang_out, false, PULL_NONE, 6);
+			gpio_configure(bitbang_in, 0, PULL_NONE, 6, false);
+			if (bad == 1) {
+				loader_log_line("focaltech: the pins set up again after a failed read\n");
+			}
+		}
 		return;
 	}
 	seen.reports++;

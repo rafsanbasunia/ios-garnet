@@ -17,12 +17,15 @@ ADRENO_VOTE	arg	adreno_vote	User space	k	hakios.adreno710.c	Garnet: ask the GMU 
 ADRENO_WATCH	arg	adreno_watch	GPU and display	k	hakios.adreno.c,hakios.adreno710.c	after the last step, say once a second for S seconds (default 20) that the machine is still alive, and what was written last
 ADSP_AGAIN	arg	adsp_again	Audio and battery	k	hakios.adsp.c	
 ADSP_APR_WAIT	arg	adsp_apr_wait	Audio and battery	k	hakios.adsp.c	
+ADSP_BELOW	arg	adsp_below	Audio and battery	k	hakios.adsp.c	
 ADSP_KEEP	arg	adsp_keep	Audio and battery	k	hakios.adsp.c	
 ADSP_LISTEN	arg	adsp_listen	Audio and battery	k	hakios.adsp.c	
 ADSP_NEW	arg	adsp_new	Audio and battery	k	hakios.adsp.c	
+ADSP_OWN_CLOCK	arg	adsp_own_clock	Audio and battery	k	hakios.adsp.c	
 ADSP_PAUSE	arg	adsp_pause	Audio and battery	k	hakios.adsp.c	
 ADSP_RETURN	arg	adsp_return	Audio and battery	k	hakios.adsp.c	
 ADSP_STEP	arg	adsp_step	Audio and battery	k	hakios.adsp.c	
+ADSP_TONE_SECS	arg	adsp_tone_secs	Audio and battery	k	hakios.adsp.c	
 ADSP_WAIT	arg	adsp_wait	Audio and battery	k	hakios.adsp.c	
 APFS_CHEAP	arg	apfs_cheap	Storage and APFS	k	apfs_vfsops.c	
 APFS_CHECK	arg	apfs_check	Storage and APFS	k	hakios.apfs_check.c	walk the whole volume and print only the totals
@@ -115,7 +118,7 @@ GARNET_GPU	arg	garnet_gpu	CPU, memory and boot	k	hakios.adreno710.c,hakios.cpufr
 GARNET_RAM	arg	garnet_ram	CPU, memory and boot	kl	(patch),loader.c	
 GARNET_ROOT_END	arg	garnet_root_end	CPU, memory and boot	k	(patch)	
 GARNET_SPEAKER	arg	garnet_speaker	Audio and battery	k	hakios.speaker.c	
-GARNET_TOUCH	arg	garnet_touch	Audio and battery	k	hakios.buttons.c,hakios.cpufreq.c,hakios.focaltech.c,hakios.speaker.c	
+GARNET_TOUCH	arg	garnet_touch	Audio and battery	k	hakios.adsp.c,hakios.buttons.c,hakios.cpufreq.c,hakios.focaltech.c,hakios.speaker.c	
 GL	arg	gl	User space	u	inject.c,inject_sb.c	not even with a GPU; gl=1: also without one, by Mesa's software driver (slow; for working on eagl.c in QEMU)
 GLBLIT	arg	glblit	GPU and display	u	eagl.c	the surface's memory, as before
 GLCENSUS	arg	glcensus	GPU and display	u	eagl.c	

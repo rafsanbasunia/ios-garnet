@@ -520,7 +520,7 @@ done
 # the loader takes.
 if [ -n "$ADSP" ] && [ -f ../fw-audio/adsp.mdt ]; then
 	mkdir -p root/fw
-	install -m 0644 ../fw-audio/adsp.mdt ../fw-audio/adsp.b0[2-9] ../fw-audio/adsp.b[1-9][0-9] root/fw/
+	install -m 0644 ../fw-audio/adsp.mdt ../fw-audio/adsp.b[0-9][0-9] root/fw/
 fi
 # Firmware that is not there is otherwise silent at build time and speaks only much later, deep in a
 # device log -- "adreno: THE GPU IS NOT STARTED: the small image has no fw/a660_gmu.bin" cost a phone
@@ -608,7 +608,7 @@ if [ -n "$FLASHBOOT" ] && [ -f $CACHE/dyld_shared_cache_arm64 ]; then
 	# from the Darwin volume's /fw, which src/init.c (flash_root) binds to this
 	if [ -f ../fw-audio/adsp.mdt ]; then
 		mkdir -p flashboot/fw
-		cp ../fw-audio/adsp.mdt ../fw-audio/adsp.b0[2-9] ../fw-audio/adsp.b[1-9][0-9] flashboot/fw/
+		cp ../fw-audio/adsp.mdt ../fw-audio/adsp.b[0-9][0-9] flashboot/fw/
 	fi
 	if [ -f ../fw-audio/aw882xx_acf.bin ]; then
 		mkdir -p flashboot/fw
@@ -682,7 +682,7 @@ if [ -f $DARWIN/system.manifest ] && [ -f $CACHE/dyld_shared_cache_arm64 ] &&
 	# it once the root is mounted (drivers/audio/hakios.adsp.c, adsp=1): 20 MB that do not fit beside GL=1 in the small image
 	if [ -f ../fw-audio/adsp.mdt ]; then
 		mkdir -p sysroot/fw
-		cp ../fw-audio/adsp.mdt ../fw-audio/adsp.b0[2-9] ../fw-audio/adsp.b[1-9][0-9] sysroot/fw/
+		cp ../fw-audio/adsp.mdt ../fw-audio/adsp.b[0-9][0-9] sysroot/fw/
 	fi
 	# MPSS firmware is much too large for the small boot image. Keep it in the system APFS,
 	# only when explicitly requested, after checking every loadable segment against this DTB.

@@ -967,9 +967,59 @@ period_fill(unsigned period, bool silent)
 	__asm__ volatile ("dsb sy");
 }
 
+/*
+ * The newer audio framework (GPR; hakios.adsp.c has the speakers' graph running when this begins): the same
+ * periods, shown to the graphs' manager and written into the graph's first module. The graph takes 96 kHz, so
+ * a period is half as many of Darwin's frames, each made two.
+ */
+static bool newer;
+#define NEWER_TOKEN             0x01000000u     /* | the period (the commands' own tokens stay under it) */
+#define NEWER_FRAMES            (PERIOD_FRAMES / 2)
+
+static bool
+newer_events(__unused uint32_t from_port, __unused uint32_t to_port, uint32_t opcode, uint32_t token, const uint32_t *payload,
+    uint32_t length)
+{
+	if (opcode != HAKIOS_GPR_WRITE_DONE || !(token & NEWER_TOKEN)) {
+		return false;
+	}
+	if (length >= 16 && payload[3] != 0) {
+		OSIncrementAtomic((volatile SInt32 *)&write_errors);
+	}
+	OSIncrementAtomic((volatile SInt32 *)&written_done);
+	OSBitOrAtomic(1u << (token & 31), &returned);
+	return true;
+}
+
+static bool
+newer_on(void)
+{
+	announce("the DSP's graph is shown our periods");
+	if (!hakios_adsp_speaker_map(buffer_address, BUFFER_BYTES, &map_handle)) {
+		say("sound: THE DSP DID NOT TAKE OUR MEMORY\n");
+		return false;
+	}
+	mapped = true;
+	say("sound: our %u KB at %#llx are the DSP's handle %#x\n", BUFFER_BYTES / 1024, buffer_address, map_handle);
+	return true;
+}
+
+static void
+newer_off(void)
+{
+	hakios_adsp_speaker_graph_stop();       /* (the graph gives the periods back before they are taken away) */
+	if (mapped) {
+		hakios_adsp_speaker_unmap(map_handle);
+		mapped = false;
+	}
+}
+
 static bool
 period_write(unsigned period)
 {
+	if (newer) {
+		return hakios_adsp_speaker_write(buffer_address + 4096 * period, map_handle, PERIOD_BYTES, NEWER_TOKEN | period);
+	}
 	uint32_t write[8] = { (uint32_t)(buffer_address + 4096 * period), (uint32_t)((buffer_address + 4096 * period) >> 32),
 		              map_handle, PERIOD_BYTES, period, 0, 0, 0 };
 
@@ -1146,26 +1196,40 @@ guard_say(const char *when, bool quiet)
 static void
 period_fill_darwin(unsigned period)
 {
-	int16_t *samples = (int16_t *)(buffer + 4096 * period);
-	uint32_t tail = ring_tail, available = ring_head - tail, n = available < PERIOD_FRAMES ? available : PERIOD_FRAMES;
+	static int16_t staged[PERIOD_FRAMES * 2], last[2];
+	int16_t *out = (int16_t *)(buffer + 4096 * period), *samples = newer ? staged : out;
+	uint32_t frames = newer ? NEWER_FRAMES : PERIOD_FRAMES;
+	uint32_t tail = ring_tail, available = ring_head - tail, n = available < frames ? available : frames;
 
 	OSMemoryBarrier();
 	for (uint32_t i = 0; i < n; i++) {
 		samples[2 * i] = ring[2 * ((tail + i) % RING_FRAMES)];
 		samples[2 * i + 1] = ring[2 * ((tail + i) % RING_FRAMES) + 1];
 	}
-	bzero(samples + 2 * n, (PERIOD_FRAMES - n) * 4);
+	bzero(samples + 2 * n, (frames - n) * 4);
 	OSMemoryBarrier();
 	ring_tail = tail + n;
 	fed_frames += n;
-	silent_frames += PERIOD_FRAMES - n;
+	silent_frames += frames - n;
 	/* the guard, on every period, silence too: its filter and its averages go on (hakios.guard.c) */
-	hakios_guard_process(samples, PERIOD_FRAMES);
+	hakios_guard_process(samples, frames);
 	if (n != 0 && hakios_audio_recording_fed()) {
 		hakios_audio_record_fed(samples, n);
 	}
 	guard_periods++;
-	for (vm_offset_t line = (vm_offset_t)samples; line < (vm_offset_t)samples + PERIOD_BYTES; line += 64) {
+	if (newer) {
+		/* (every frame twice as many: the one between it and the one before, then itself) */
+		for (uint32_t i = 0; i < frames; i++) {
+			for (unsigned c = 0; c < 2; c++) {
+				int16_t now = staged[2 * i + c];
+
+				out[4 * i + c] = (int16_t)((last[c] + now) / 2);
+				out[4 * i + 2 + c] = now;
+				last[c] = now;
+			}
+		}
+	}
+	for (vm_offset_t line = (vm_offset_t)out; line < (vm_offset_t)out + PERIOD_BYTES; line += 64) {
 		__asm__ volatile ("dc cvac, %0" : : "r" (line));
 	}
 	__asm__ volatile ("dsb sy");
@@ -1367,9 +1431,14 @@ take_down(void)
 	if (running && !taken_down) {
 		taken_down = true;
 		hakios_speaker_stop();
-		stream_off();
-		afe_off();
-		pins_off();
+		if (newer) {
+			newer_off();
+			hakios_adsp_gpr_events(NULL);
+		} else {
+			stream_off();
+			afe_off();
+			pins_off();
+		}
 		lck_mtx_lock(&hakios_smmu_lock);
 		shared_put(0);
 		lck_mtx_unlock(&hakios_smmu_lock);
@@ -1391,6 +1460,11 @@ sound_thread(__unused void *parameter, __unused wait_result_t result)
 	if (taken_down) {
 		lck_mtx_unlock(&sound_lock);
 		thread_terminate(current_thread());
+	}
+	newer = hakios_adsp_speaker_graph();
+	if (newer && level != 4) {
+		say("sound: with the newer audio framework only level 4 is done here (its tests are hakios.adsp.c's steps)\n");
+		goto out;
 	}
 	if (level == 4) {
 		say("sound: level 4: what Darwin plays, through the port, a stream and the amplifiers, until the run ends\n");
@@ -1415,7 +1489,17 @@ sound_thread(__unused void *parameter, __unused wait_result_t result)
 			goto out;
 		}
 		ok = false;
-		hakios_adsp_apr_events(events);
+		if (newer) {
+			hakios_adsp_gpr_events(newer_events);
+		} else {
+			hakios_adsp_apr_events(events);
+		}
+	}
+	if (newer) {
+		if (!newer_on()) {
+			goto out;
+		}
+		goto darwin;
 	}
 	announce("the TDM pins (GPIO 97 to 100) to the interface, as Android's active state has them");
 	pins_on();
@@ -1435,6 +1519,7 @@ sound_thread(__unused void *parameter, __unused wait_result_t result)
 	if (!stream_on()) {
 		goto out;
 	}
+darwin:
 	if (level == 4) {
 		thread_t feeder;
 
@@ -1499,7 +1584,15 @@ hakios_sound_dsp_up(void)
 {
 	thread_t thread;
 
-	if (!PE_parse_boot_argn("sound", &level, sizeof(level)) || level == 0) {
+	if (!PE_parse_boot_argn("sound", &level, sizeof(level)) && hakios_adsp_speaker_graph()) {
+		/*
+		 * (Not asked for, and the newer framework's graph for the speakers runs: what Darwin plays goes to them,
+		 * 6 dB under Android's level unless sound_below says otherwise. sound=0 keeps them silent.)
+		 */
+		level = 4;
+		below = 48;
+	}
+	if (level == 0) {
 		return;
 	}
 	if (level > 4) {

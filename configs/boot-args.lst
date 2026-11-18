@@ -18,12 +18,15 @@ adreno_watch	k
 adsp	k
 adsp_again	k
 adsp_apr_wait	k
+adsp_below	k
 adsp_keep	k
 adsp_listen	k
 adsp_new	k
+adsp_own_clock	k
 adsp_pause	k
 adsp_return	k
 adsp_step	k
+adsp_tone_secs	k
 adsp_wait	k
 apfs_cheap	k
 apfs_check	k

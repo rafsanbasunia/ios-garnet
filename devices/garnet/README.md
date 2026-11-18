@@ -30,7 +30,7 @@ The device folder of ios-garnet, kept in the tree (`devices/manifest.conf`: `pat
 | **CPU / SMP** | **Works** | Full 8-core multicore bringup (`cpus=8`, `bootcpu=7`, `cpufreq=1`). CPACR_EL1 FP/SIMD active on secondary cores. |
 | **GPU** | **Works** | Adreno 710 at 345-940 MHz (the kernel programs `gpu_cc_pll0`). The window server draws through Metal with GMEM tiles (`gpu=1 metal=1 metal_gmem=1`); OpenGL ES through Mesa freedreno. Known: coloured blocks at a tile seam during fast swipes. |
 | **Storage (UFS)** | **Works** | UFS reading through UEFI loader; mutable `/private/var` storage with `var_store=1 ufs_write=1`. |
-| **Audio** | **Partial** | Dual AW88261 speaker amplifiers initialized; full audio DSP in progress. |
+| **Audio** | **Works** (speakers) | The audio DSP (AudioReach/GPR) plays what iOS plays through both AW88261 amplifiers; on by default with the phone's audio firmware. No microphones, headphones or calls. See `docs/garnet/AUDIO.md`. |
 | **Battery** | **Partial** | Battery level read through PMIC; in-kernel charging not implemented (phone discharges during session). |
 | **Wi-Fi** | **Works** | WCN3990-class radio on the WPSS DSP, Linux ath10k (snoc) in the kernel (`wifi=1`). Settings scans and joins 2.4 and 5 GHz WPA2 networks; DHCP and DNS. No WPA3. |
 | **Cellular** | **Missing** | MPSS/IPA modem currently in progress for Garnet. |
@@ -78,7 +78,7 @@ To extract vendor firmware binaries from your phone running Android:
 ```bash
 ./pull-firmware.sh
 ```
-Pulls the Adreno 710 GMU/SQE/ZAP firmware (`fw-gpu/`), the Wi-Fi DSP image, board data and regulatory database (`fw-wifi/`; the board data needs root on Android), audio DSP firmware (`fw-audio/`) and haptics firmware (`fw-haptic/`). All vendor binaries stay out of Git.
+Pulls the Adreno 710 GMU/SQE/ZAP firmware (`fw-gpu/`), the Wi-Fi DSP image, board data and regulatory database (`fw-wifi/`; the board data needs root on Android), audio DSP firmware and the speaker amplifiers' configuration (`fw-audio/`) and haptics firmware (`fw-haptic/`). All vendor binaries stay out of Git.
 
 ---
 

@@ -37,8 +37,9 @@ if [ -f "fw-wifi/$board" ]; then cp "fw-wifi/$board" fw-wifi/board.bin && echo "
 else echo "pull-firmware.sh: fw-wifi/$board: not pulled, so no board.bin (BOARD= names another)"; fi
 echo "pull-firmware.sh: fw-wifi: $(ls -1 fw-wifi | wc -l | tr -d ' ') files"
 
-# Audio: ADSP
-pull fw-audio /vendor/firmware_mnt/image/adsp.mdt $(for i in $(seq -w 2 36); do echo /vendor/firmware_mnt/image/adsp.b$i; done)
+# Audio: the audio DSP's image (every segment the phone has), and the speaker amplifiers' configuration
+pull fw-audio /vendor/firmware_mnt/image/adsp.mdt $(for i in $(seq -w 0 36); do adb shell "[ -f /vendor/firmware_mnt/image/adsp.b$i ]" 2>/dev/null && echo /vendor/firmware_mnt/image/adsp.b$i; done)
+pull fw-audio /vendor/etc/aw882xx_acf.bin
 
 # Haptic: AW8697 / Awinic
 pull fw-haptic /vendor/firmware/aw8697_haptic.bin

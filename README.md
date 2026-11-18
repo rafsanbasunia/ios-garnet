@@ -22,6 +22,7 @@ Status: November 2026.
 | Graphics | CoreAnimation drawn through Metal on the Adreno 710 at 940 MHz; home-screen page swipes 62-68 fps |
 | Touch | FocalTech FT3683G, multi-touch and system gestures |
 | Buttons | Power, volume up, volume down (volume display, Control Center's volume slider) |
+| Sound | Both speakers, through the audio DSP (AudioReach) and the two AW88261 amplifiers: system sounds, music, video |
 | Wi-Fi | 2.4 and 5 GHz (up to 80 MHz), WPA2; scan and join from Settings, DHCP, DNS, Safari |
 | Battery | Level reading |
 | Copy and paste | the pasteboard daemon (pasted); drag and drop, the share sheet |
@@ -30,13 +31,13 @@ Status: November 2026.
 ## What does not work (yet)
 
 - Cellular, Bluetooth, camera, sensors, GPS.
-- Audio: the system's audio server runs (volume keys and slider work), but the speakers are silent: garnet's audio
-  DSP speaks AudioReach (GPR), and that path is not written yet.
+- Audio: no microphones, no headphones, no Bluetooth audio, no calls; the earpiece is not a route of its own.
 - Wi-Fi: no WPA3; channels 12-14 off; on 5 GHz a network shows only once its access point has been heard.
 - Graphics: Control Center at about 35-40 fps; 120 Hz not reached.
 - Memory: iOS gets about 6 GB of the 8 GB (the rest is below 4 GB, among the firmware's regions), and the system
   image takes 2.4 GB of it, so very heavy web pages can still run short.
-- No charging while iOS runs.
+- Charging: on a PC's USB port the charger takes about 0.4 A, less than the phone uses, so the level falls slowly
+  while iOS runs.
 - Nothing persists across reboots (RAM boot).
 - Security is off: code signatures are not enforced. Apple services (activation, Apple ID, iCloud, App Store) are not
   supported.
@@ -60,7 +61,7 @@ You need:
 - a POCO X6 5G with an **unlocked bootloader**;
 - a Linux PC (Ubuntu 24.04 or WSL2) with about 40 GB free, and `adb`/`fastboot`;
 - an iOS 16.5 IPSW for the iPhone X (iPhone10,3, build 20F66) that you obtain yourself;
-- the phone's own Wi-Fi firmware, copied from the phone (below).
+- the phone's own Wi-Fi and audio firmware, copied from the phone (below).
 
 Nothing of Apple's and no vendor firmware is in this repository.
 
@@ -96,6 +97,10 @@ needs root on Android):
 DARWIN_ROOTFS=/path/to/unpacked/ios16.5/rootfs \
   bash tools/garnet-wifi-image.sh fw-wifi userland/root.apfs
 ```
+
+For sound, `pull-firmware.sh` must have filled `fw-audio/` (the audio DSP's image and the amplifiers' configuration)
+before the system image and this root image are built: both take what they need from there. Sound is then on by
+default; see [docs/garnet/AUDIO.md](docs/garnet/AUDIO.md).
 
 Optional, once: a shader cache, so that no boot compiles CoreAnimation's shaders again (one run collects them and
 hands them over through RAM; nothing is written to the phone's storage). See `tools/garnet-metal-cache.sh`.
@@ -147,7 +152,7 @@ Every argument: [docs/boot-args.md](docs/boot-args.md).
 | `xnuloader/` | the UEFI loader that receives kernel and images over USB |
 | `devices/garnet/` | the phone: `device.conf` (what works), `configs/` (drivers and arguments), `soc/` (SM7435), `pull-firmware.sh`, UEFI platform |
 | `tools/` | build and image tools (`mk-ath10k.sh`, `garnet-wifi-image.sh`, `garnet-prebuilt.sh`, `garnet-root-apfs.sh`, `apfs/`, ...) |
-| `docs/garnet/` | this port's notes: [GPU](docs/garnet/GPU.md), [Wi-Fi](docs/garnet/WIFI.md), [roadmap](docs/garnet/ROADMAP.md) |
+| `docs/garnet/` | this port's notes: [GPU](docs/garnet/GPU.md), [Wi-Fi](docs/garnet/WIFI.md), [sound](docs/garnet/AUDIO.md), [roadmap](docs/garnet/ROADMAP.md) |
 | `docs/boot-args.md` | every boot argument, generated from the source |
 
 ## Changes over HakiOS

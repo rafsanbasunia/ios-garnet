@@ -226,9 +226,33 @@ half_bit(void)
 }
 
 /* A line is pulled low (the pin drives 0) or let go (the pin is an input and the pull-up raises it). */
+/*
+ * On garnet the bus has no pull-ups but the pins' own, which raise a line slowly: there the clock is driven
+ * both ways (the amplifiers never hold it), and the data line is driven high for a moment before it is let
+ * go -- only when it was us who held it low --, so that every edge is a sharp one.
+ */
+static bool sharp_edges, sda_held_low;
+
 static void
 line(unsigned pin, bool high)
 {
+	if (sharp_edges && pin == PIN_SCL) {
+		wr(GPIO_IO(pin), high ? 2 : 0);
+		wr(GPIO_CFG(pin), CFG_PULL_UP | CFG_OUTPUT);
+		return;
+	}
+	if (sharp_edges && pin == PIN_SDA) {
+		if (high && sda_held_low) {
+			wr(GPIO_IO(pin), 2);
+			spin_us(1);
+		}
+		sda_held_low = !high;
+		if (!high) {
+			wr(GPIO_IO(pin), 0);
+		}
+		wr(GPIO_CFG(pin), CFG_PULL_UP | (high ? 0 : CFG_OUTPUT));
+		return;
+	}
 	wr(GPIO_IO(pin), 0);
 	wr(GPIO_CFG(pin), CFG_PULL_UP | (high ? 0 : CFG_OUTPUT));
 }
@@ -243,6 +267,16 @@ static void
 i2c_start(void)
 {
 	line(PIN_SDA, true);
+	/*
+	 * (A start within a transaction comes right after the device's acknowledge, which held the data line low: the
+	 * line has to be up again before the clock rises, or the device sees one more data bit and no start -- and
+	 * takes what was meant as a read for a write. With weak pull-ups that takes a while.)
+	 */
+	half_bit();
+	for (unsigned waited = 0; !level(PIN_SDA) && waited < 100; waited++) {
+		half_bit();
+	}
+	half_bit();
 	line(PIN_SCL, true);
 	half_bit();
 	line(PIN_SDA, false);
@@ -315,6 +349,7 @@ bus_take(void)
 	taken_cfg[1] = rd(GPIO_CFG(PIN_SCL));
 	taken_io[0] = rd(GPIO_IO(PIN_SDA));
 	taken_io[1] = rd(GPIO_IO(PIN_SCL));
+	sda_held_low = false;
 	line(PIN_SDA, true);
 	line(PIN_SCL, true);
 	half_bit();
@@ -331,6 +366,12 @@ bus_take(void)
 static void
 bus_give_back(void)
 {
+	if (sharp_edges) {
+		/* (nothing else uses this bus here, and as found the pins have no pull: the lines stay at rest, pulled up) */
+		wr(GPIO_CFG(PIN_SDA), CFG_PULL_UP);
+		wr(GPIO_CFG(PIN_SCL), CFG_PULL_UP);
+		return;
+	}
 	wr(GPIO_IO(PIN_SDA), taken_io[0] & 2);
 	wr(GPIO_IO(PIN_SCL), taken_io[1] & 2);
 	wr(GPIO_CFG(PIN_SDA), taken_cfg[0]);
@@ -806,6 +847,12 @@ hakios_speaker_prepare(const uint8_t *acf, uint64_t size)
 		is_garnet_speaker = true;
 		pin_sda = 24;
 		pin_scl = 25;
+		sharp_edges = true;
+		/* (this phone's tree has them the other way round: 0x34 is sound-channel 0, 0x35 is 1) */
+		amplifiers[0].address = 0x34;
+		amplifiers[0].where = "0x34, channel 0";
+		amplifiers[1].address = 0x35;
+		amplifiers[1].where = "0x35, channel 1";
 		garnet_speaker_reset_release();
 	}
 	broken = false;
@@ -1308,6 +1355,7 @@ hakios_speaker_init(void)
 	if (is_garnet_speaker) {
 		pin_sda = 24;
 		pin_scl = 25;
+		sharp_edges = true;
 	}
 
 	if (!PE_parse_boot_argn("speaker_probe", &probe_level, sizeof(probe_level)) &&

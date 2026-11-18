@@ -21,6 +21,10 @@
 #                   the system and nothing answers them. nanoregistryd has to come with it: the audio server asks the
 #                   paired-watch registry for its preferences while it starts and waits for the answer for ever, and
 #                   SpringBoard, which waits for the audio server, never gets past the Apple logo.
+#   AUDIO_FW        the phone's own audio firmware (default fw-audio, as devices/garnet/pull-firmware.sh fills it): the
+#                   audio DSP's first two segments and the speaker amplifiers' configuration (aw882xx_acf.bin) go
+#                   into this image when they are there; the DSP's large segments are the system image's
+#                   (userland/build.sh). Without them the speakers stay silent and nothing else changes.
 #   FILEJOBS        files, the pasteboard and sharing (default: fileproviderd, filecoordinationd, pasted, druid, kbd,
 #                   sharingd). Without fileproviderd the Files app dies as it starts and every file picker says "the
 #                   requested app extension could not be found" (an application importing a file, Safari's downloads); without
@@ -44,6 +48,8 @@ FILEJOBS=${FILEJOBS-"com.apple.FileProvider com.apple.FileCoordination com.apple
 args=()
 for f in "$F"/wpss.mdt "$F"/wpss.b??; do args+=(--file "$f=/fw/$(basename "$f")"); done
 for f in "$F"/board.bin "$F"/bdwlan.??? "$F"/regdb.bin; do [ -f "$f" ] && args+=(--file "$f=/fw/$(basename "$f")"); done
+AUDIO_FW=${AUDIO_FW:-fw-audio}
+for f in "$AUDIO_FW"/adsp.b00 "$AUDIO_FW"/adsp.b01 "$AUDIO_FW"/aw882xx_acf.bin; do [ -f "$f" ] && args+=(--file "$f=/fw/$(basename "$f")"); done
 rm -rf out/wifi-jobs; mkdir -p out/wifi-jobs out/root
 if [ -n "$NETJOBS$MEDIAJOBS$FILEJOBS" ]; then
 	[ -d "$DARWIN_ROOTFS/System/Library/LaunchDaemons" ] || { echo "garnet-wifi-image.sh: no Darwin root filesystem at $DARWIN_ROOTFS (DARWIN_ROOTFS)" >&2; exit 1; }
