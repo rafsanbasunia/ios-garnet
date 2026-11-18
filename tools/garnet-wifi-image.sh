@@ -26,8 +26,7 @@
 #                   requested app extension could not be found" (an application importing a file, Safari's downloads); without
 #                   pasted, Copy does nothing and Paste never shows (only the application in front may use the
 #                   pasteboard: a program started from a job list is refused); druid is drag and drop, kbd the
-#                   keyboard's text services, sharingd the share sheet ("Open in" another application). Files then
-#                   opens, but "On My iPhone" is not offered yet: its provider does not come up.
+#                   keyboard's text services, sharingd the share sheet ("Open in" another application).
 #
 # Start the kernel with wifi=1. The driver's object is made by tools/mk-ath10k.sh and tools/mk-wlfw-cnss.sh before
 # the kernel is built (xnu-build.sh links xnu-deps/build/ath10k/out/ath10k.o when it is there).

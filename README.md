@@ -25,6 +25,7 @@ Status: November 2026.
 | Wi-Fi | 2.4 and 5 GHz (up to 80 MHz), WPA2; scan and join from Settings, DHCP, DNS, Safari |
 | Battery | Level reading |
 | Copy and paste | the pasteboard daemon (pasted); drag and drop, the share sheet |
+| Files | the Files app with "On My iPhone" (kept in memory, like all of `/private/var`) |
 
 ## What does not work (yet)
 
@@ -37,8 +38,6 @@ Status: November 2026.
   image takes 2.4 GB of it, so very heavy web pages can still run short.
 - No charging while iOS runs.
 - Nothing persists across reboots (RAM boot).
-- Files opens, but "On My iPhone" is not offered yet (its file provider does not come up), so file pickers show
-  nothing.
 - Security is off: code signatures are not enforced. Apple services (activation, Apple ID, iCloud, App Store) are not
   supported.
 
@@ -166,6 +165,7 @@ Every argument: [docs/boot-args.md](docs/boot-args.md).
 | GPU memory | surface mappings no longer leak (browsing ran the phone out of memory); kept buffers capped for all clients; `mem_owners=1` |
 | Memory | the kernel's window starts at 0x800000000: 6 GB instead of 5 on the 8 GB phone |
 | Files, pasteboard | `garnet-wifi-image.sh` `FILEJOBS`: fileproviderd, filecoordinationd, pasted, druid, kbd, sharingd (copy and paste work; Files no longer dies at start) |
+| On My iPhone | `select-system.py` keeps a framework plug-in's own program (the local storage provider was a bundle without one); the file provider daemon is told `/private/var` is APFS, since it keeps its library on APFS only and `/private/var` is ramfs (`var_apfs`, on by default) |
 
 ## Key hardware facts
 

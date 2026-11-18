@@ -1534,10 +1534,55 @@ index f64d8c647365..f2e13c1aa7f3 100644
  	void *dir_pos;
  	void *dir_end;
 diff --git a/bsd/vfs/vfs_syscalls.c b/bsd/vfs/vfs_syscalls.c
-index 2bbba037c2dd..ee65d5943196 100644
+index 2bbba03..9adce5a 100644
 --- a/bsd/vfs/vfs_syscalls.c
 +++ b/bsd/vfs/vfs_syscalls.c
-@@ -7261,7 +7261,7 @@ readlinkat_internal(vfs_context_t ctx, int fd, vnode_t lnk_vp, user_addr_t path,
+@@ -187,6 +187,35 @@ static int getfsstat_callback(mount_t mp, void * arg);
+ static int getutimes(user_addr_t usrtvp, struct timespec *tsp);
+ static int setutimes(vfs_context_t ctx, vnode_t vp, const struct timespec *ts, int nullflag);
+ static int sync_callback(mount_t, void *);
++/*
++ * hakios: /private/var is a memory filesystem here (ramfs), and the file provider daemon keeps its library only
++ * on a local, writable APFS volume: asked what /private/var is, it hears "ramfs", finds no volume to keep a
++ * library on, and no provider ever gets a domain -- Files has no "On My iPhone" and every file picker is empty.
++ * So the daemon and the local storage provider (and they alone) are told "apfs" for that one mount. Boot-arg
++ * var_apfs=0 turns that off; var_apfs=2 tells every process.
++ */
++static const char *
++hakios_fstypename(struct mount *mp, const char *name)
++{
++	static int asked, mode = 1;
++	char who[MAXCOMLEN + 1];
++
++	if (!asked) {
++		PE_parse_boot_argn("var_apfs", &mode, sizeof(mode));
++		asked = 1;
++	}
++	if (mode == 0 || strcmp(name, "ramfs") != 0 || strcmp(mp->mnt_vfsstat.f_mntonname, "/private/var") != 0) {
++		return name;
++	}
++	if (mode == 1) {
++		proc_selfname(who, sizeof(who));
++		if (strcmp(who, "fileproviderd") != 0 && strncmp(who, "LocalStorageFile", 16) != 0) {
++			return name;
++		}
++	}
++	return "apfs";
++}
++
+ static int munge_statfs(struct mount *mp, struct vfsstatfs *sfsp,
+     user_addr_t bufp, int *sizep, boolean_t is_64_bit,
+     boolean_t partial_copy);
+@@ -3522,7 +3551,7 @@ vfs_get_statfs64(struct mount *mp, struct statfs64 *sfs)
+ 	if (mp->mnt_kern_flag & MNTK_TYPENAME_OVERRIDE) {
+ 		strlcpy(&sfs->f_fstypename[0], &mp->fstypename_override[0], MFSTYPENAMELEN);
+ 	} else {
+-		strlcpy(&sfs->f_fstypename[0], &vsfs->f_fstypename[0], MFSTYPENAMELEN);
++		strlcpy(&sfs->f_fstypename[0], hakios_fstypename(mp, &vsfs->f_fstypename[0]), MFSTYPENAMELEN);
+ 	}
+ 	strlcpy(&sfs->f_mntonname[0], &vsfs->f_mntonname[0], MAXPATHLEN);
+ 	strlcpy(&sfs->f_mntfromname[0], &vsfs->f_mntfromname[0], MAXPATHLEN);
+@@ -7261,7 +7290,7 @@ readlinkat_internal(vfs_context_t ctx, int fd, vnode_t lnk_vp, user_addr_t path,
  	uio_t auio;
  	int error;
  	struct nameidata nd;
@@ -1546,7 +1591,7 @@ index 2bbba037c2dd..ee65d5943196 100644
  	bool put_vnode;
  
  	if (bufsize > INT32_MAX) {
-@@ -10314,7 +10314,7 @@ getdirentries_common(int fd, user_addr_t bufp, user_size_t bufsize, ssize_t *byt
+@@ -10314,7 +10343,7 @@ getdirentries_common(int fd, user_addr_t bufp, user_size_t bufsize, ssize_t *byt
  	int spacetype = proc_is64bit(vfs_context_proc(&context)) ? UIO_USERSPACE64 : UIO_USERSPACE32;
  	off_t loff;
  	int error, numdirent;
@@ -1555,7 +1600,7 @@ index 2bbba037c2dd..ee65d5943196 100644
  
  get_from_fd:
  	error = fp_getfvp(vfs_context_proc(&context), fd, &fp, &vp);
-@@ -10613,7 +10613,7 @@ getdirentriesattr(proc_t p, struct getdirentriesattr_args *uap, int32_t *retval)
+@@ -10613,7 +10642,7 @@ getdirentriesattr(proc_t p, struct getdirentriesattr_args *uap, int32_t *retval)
  	struct attrlist attributelist;
  	vfs_context_t ctx = vfs_context_current();
  	int fd = uap->fd;
@@ -1564,7 +1609,7 @@ index 2bbba037c2dd..ee65d5943196 100644
  	kauth_action_t action;
  
  	AUDIT_ARG(fd, fd);
-@@ -10954,7 +10954,7 @@ searchfs(proc_t p, struct searchfs_args *uap, __unused int32_t *retval)
+@@ -10954,7 +10983,7 @@ searchfs(proc_t p, struct searchfs_args *uap, __unused int32_t *retval)
  	size_t mallocsize;
  	uint32_t nameiflags;
  	vfs_context_t ctx = vfs_context_current();
@@ -1573,7 +1618,7 @@ index 2bbba037c2dd..ee65d5943196 100644
  
  	/* Start by copying in fsearchblock parameter list */
  	if (IS_64BIT_PROCESS(p)) {
-@@ -12906,7 +12906,7 @@ getxattr(proc_t p, struct getxattr_args *uap, user_ssize_t *retval)
+@@ -12906,7 +12935,7 @@ getxattr(proc_t p, struct getxattr_args *uap, user_ssize_t *retval)
  	size_t namelen;
  	u_int32_t nameiflags;
  	int error;
@@ -1582,7 +1627,7 @@ index 2bbba037c2dd..ee65d5943196 100644
  
  	if (uap->options & (XATTR_NOSECURITY | XATTR_NODEFAULT)) {
  		return EINVAL;
-@@ -12990,7 +12990,7 @@ fgetxattr(proc_t p, struct fgetxattr_args *uap, user_ssize_t *retval)
+@@ -12990,7 +13019,7 @@ fgetxattr(proc_t p, struct fgetxattr_args *uap, user_ssize_t *retval)
  	size_t attrsize = 0;
  	size_t namelen;
  	int error;
@@ -1591,7 +1636,7 @@ index 2bbba037c2dd..ee65d5943196 100644
  
  	if (uap->options & (XATTR_NOFOLLOW | XATTR_NOSECURITY | XATTR_NODEFAULT)) {
  		return EINVAL;
-@@ -13038,7 +13038,7 @@ out:
+@@ -13038,7 +13067,7 @@ out:
  struct setxattr_ctx {
  	struct nameidata nd;
  	char attrname[XATTR_MAXNAMELEN + 1];
@@ -1600,7 +1645,7 @@ index 2bbba037c2dd..ee65d5943196 100644
  };
  
  /*
-@@ -13134,7 +13134,7 @@ fsetxattr(proc_t p, struct fsetxattr_args *uap, int *retval)
+@@ -13134,7 +13163,7 @@ fsetxattr(proc_t p, struct fsetxattr_args *uap, int *retval)
  	int spacetype = IS_64BIT_PROCESS(p) ? UIO_USERSPACE64 : UIO_USERSPACE32;
  	size_t namelen;
  	int error;
@@ -1609,7 +1654,7 @@ index 2bbba037c2dd..ee65d5943196 100644
  
  	if (uap->options & (XATTR_NOFOLLOW | XATTR_NOSECURITY | XATTR_NODEFAULT)) {
  		return EINVAL;
-@@ -13311,7 +13311,7 @@ listxattr(proc_t p, struct listxattr_args *uap, user_ssize_t *retval)
+@@ -13311,7 +13340,7 @@ listxattr(proc_t p, struct listxattr_args *uap, user_ssize_t *retval)
  	size_t attrsize = 0;
  	u_int32_t nameiflags;
  	int error;
@@ -1618,7 +1663,7 @@ index 2bbba037c2dd..ee65d5943196 100644
  
  	if (uap->options & (XATTR_NOSECURITY | XATTR_NODEFAULT)) {
  		return EINVAL;
-@@ -13353,7 +13353,7 @@ flistxattr(proc_t p, struct flistxattr_args *uap, user_ssize_t *retval)
+@@ -13353,7 +13382,7 @@ flistxattr(proc_t p, struct flistxattr_args *uap, user_ssize_t *retval)
  	int spacetype = proc_is64bit(p) ? UIO_USERSPACE64 : UIO_USERSPACE32;
  	size_t attrsize = 0;
  	int error;
@@ -1627,6 +1672,24 @@ index 2bbba037c2dd..ee65d5943196 100644
  
  	if (uap->options & (XATTR_NOFOLLOW | XATTR_NOSECURITY | XATTR_NODEFAULT)) {
  		return EINVAL;
+@@ -13611,7 +13640,7 @@ munge_statfs(struct mount *mp, struct vfsstatfs *sfsp,
+ 		if (mp->mnt_kern_flag & MNTK_TYPENAME_OVERRIDE) {
+ 			strlcpy(&sfs.f_fstypename[0], &mp->fstypename_override[0], MFSNAMELEN);
+ 		} else {
+-			strlcpy(&sfs.f_fstypename[0], &sfsp->f_fstypename[0], MFSNAMELEN);
++			strlcpy(&sfs.f_fstypename[0], hakios_fstypename(mp, &sfsp->f_fstypename[0]), MFSNAMELEN);
+ 		}
+ 		strlcpy(&sfs.f_mntonname[0], &sfsp->f_mntonname[0], MNAMELEN);
+ 		strlcpy(&sfs.f_mntfromname[0], &sfsp->f_mntfromname[0], MNAMELEN);
+@@ -13689,7 +13718,7 @@ munge_statfs(struct mount *mp, struct vfsstatfs *sfsp,
+ 		if (mp->mnt_kern_flag & MNTK_TYPENAME_OVERRIDE) {
+ 			strlcpy(&sfs.f_fstypename[0], &mp->fstypename_override[0], MFSNAMELEN);
+ 		} else {
+-			strlcpy(&sfs.f_fstypename[0], &sfsp->f_fstypename[0], MFSNAMELEN);
++			strlcpy(&sfs.f_fstypename[0], hakios_fstypename(mp, &sfsp->f_fstypename[0]), MFSNAMELEN);
+ 		}
+ 		strlcpy(&sfs.f_mntonname[0], &sfsp->f_mntonname[0], MNAMELEN);
+ 		strlcpy(&sfs.f_mntfromname[0], &sfsp->f_mntfromname[0], MNAMELEN);
 diff --git a/bsd/vfs/vfs_vnops.c b/bsd/vfs/vfs_vnops.c
 index 5b51e9c46a8d..6872b94631c9 100644
 --- a/bsd/vfs/vfs_vnops.c

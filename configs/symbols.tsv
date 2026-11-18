@@ -303,6 +303,7 @@ USTACKS_COUNT	arg	ustacks_count	Debugging	k	user_exception_trace.c
 USTACKS_MS	arg	ustacks_ms	Debugging	k	user_exception_trace.c	
 USTACKS_THREADS	arg	ustacks_threads	Debugging	k	user_exception_trace.c	
 USTACKS_TNAME	arg	ustacks_tname	Debugging	k	user_exception_trace.c	
+VAR_APFS	arg	var_apfs	CPU, memory and boot	k	(patch)	
 VAR_HFS	arg	var_hfs	User space	u	init.c	
 VAR_SAVE_MS	arg	var_save_ms	Storage and APFS	k	hakios.ufs.c	
 VBLUR	arg	vblur	GPU and display	u	eagl.c	

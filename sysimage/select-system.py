@@ -149,6 +149,13 @@ def wanted_file(path, size):
     if path.startswith(('Applications/', HEALTH)):
         return not path.lower().endswith(SKIP_APP_EXT) and '.mlmodelc/' not in path
     if path.startswith(FRAMEWORKS):
+        # a framework's plug-in's own program (PlugIns/X.appex/X): left out by the size rule below, the plug-in is
+        # a bundle that names a program it has not got, and LaunchServices does not take it. Files' "On My iPhone"
+        # is one (FileProvider.framework's LocalStorageFileProvider, 9 MB), the document picker's service and
+        # "Save to Files" are others (DocumentManagerUICore.framework, 5 MB each)
+        plugin = re.search(r'/PlugIns/([^/]+)\.appex/([^/]+)$', path)
+        if plugin and plugin.group(1) == plugin.group(2):
+            return size <= 32 << 20
         if re.search(r'/(XPCServices|Support|Helpers)/', path):
             return size <= 32 << 20 and not path.lower().endswith(('.png', '.car', '.loctable', '.caml'))
         if path.endswith('.car'):

@@ -334,6 +334,7 @@ ustacks_count	k
 ustacks_ms	k
 ustacks_threads	k
 ustacks_tname	k
+var_apfs	k
 var_hfs	u
 var_save_ms	k
 var_store	u
