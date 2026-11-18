@@ -134,6 +134,16 @@ void Gpu::disown(std::unique_ptr<Bo> bo) {
     }
 }
 
+void Gpu::forget(std::unique_ptr<Bo> bo) {
+    if (bo == nullptr) return;
+    bo->cpu_ = nullptr;
+    bo->owned_ = false;
+    if (bo->counted_) {
+        allocated_ -= bo->size_;
+        bo->counted_ = false;
+    }
+}
+
 Bo::~Bo() { gpu_.release(*this); }
 
 void Gpu::release(Bo& bo) {

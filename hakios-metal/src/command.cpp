@@ -200,8 +200,20 @@ namespace {
 // the live surface buffers, by (GPU, kernel handle): the kernel gives this client one handle per surface, so two
 // Buffers over it would close it twice. The deleter takes the lock too, so that a handle the kernel hands out again
 // cannot be met by a Buffer still being destroyed.
+//
+// And `holders` counts the Buffers over the handle that are not yet deleted, the dying one included. A Buffer whose
+// last reference goes waits in its deleter for this lock; asked for the same surface meanwhile, the kernel answers
+// with the same handle (it is not closed yet), the dead Buffer cannot be had again, and a second Buffer is made over
+// it. The first one's deleter then closed the handle under the second, whose own unmapping later named a handle the
+// kernel no longer had and was refused: its mapping stayed, and with it the whole surface's memory, wired, for as
+// long as the window server lived. Browsing made one a second (a page is many surfaces); the kernel was out of
+// memory in minutes. So the handle is closed by the last of its Buffers (the kernel takes its mappings away then).
+struct SurfaceEntry {
+    std::weak_ptr<Buffer> live;
+    uint32_t holders = 0;
+};
 std::mutex gSurfaceLock;
-std::map<std::pair<const Gpu*, uint32_t>, std::weak_ptr<Buffer>> gSurfaceBuffers;
+std::map<std::pair<const Gpu*, uint32_t>, SurfaceEntry> gSurfaceBuffers;
 }  // namespace
 
 std::shared_ptr<Buffer> surfaceBuffer(Gpu& gpu, uint32_t surfaceId, SurfaceInfo* info, std::string* why) {
@@ -216,19 +228,26 @@ std::shared_ptr<Buffer> surfaceBuffer(Gpu& gpu, uint32_t surfaceId, SurfaceInfo*
     const auto key = std::make_pair(static_cast<const Gpu*>(&gpu), bo->handle());
     auto live = gSurfaceBuffers.find(key);
     if (live != gSurfaceBuffers.end()) {
-        if (std::shared_ptr<Buffer> b = live->second.lock()) {
-            gpu.disown(std::move(bo));   // the same handle as the live Buffer's Bo: closed once, by that Bo
+        if (std::shared_ptr<Buffer> b = live->second.live.lock()) {
+            gpu.forget(std::move(bo));   // the same handle (and mapping) as the live Buffer's Bo: closed once, by that Bo
             return b;
         }
     }
     const uint64_t length = bo->size();
-    std::shared_ptr<Buffer> b(new Buffer(std::move(bo), length), [key](Buffer* x) {
+    Gpu* owner = &gpu;
+    std::shared_ptr<Buffer> b(new Buffer(std::move(bo), length), [key, owner](Buffer* x) {
         std::lock_guard<std::mutex> g(gSurfaceLock);
         auto it = gSurfaceBuffers.find(key);
-        if (it != gSurfaceBuffers.end() && it->second.expired()) gSurfaceBuffers.erase(it);
+        if (it != gSurfaceBuffers.end() && --it->second.holders != 0) {
+            owner->forget(x->takeBo());  // another Buffer has the handle: left open, its mappings with it
+        } else if (it != gSurfaceBuffers.end()) {
+            gSurfaceBuffers.erase(it);
+        }
         delete x;
     });
-    gSurfaceBuffers[key] = b;
+    SurfaceEntry& entry = gSurfaceBuffers[key];
+    entry.live = b;
+    entry.holders++;
     return b;
 }
 

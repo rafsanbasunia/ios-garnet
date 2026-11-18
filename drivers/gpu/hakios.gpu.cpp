@@ -44,6 +44,8 @@ extern "C" void flush_dcache64(addr64_t addr, unsigned count, int phys);
 #include "MiniIOSurface.h"
 
 extern "C" void hakios_tl(const char * format, ...) __printflike(1, 2);
+extern "C" unsigned int memorystatus_available_pages;
+extern "C" void proc_selfname(char * buf, int size);
 
 extern "C" {
 /* drivers/gpu/hakios.adreno.c ("the GPU kept on"; declared in bsd/sys/hakios.input.h, which is not seen from here) */
@@ -447,6 +449,17 @@ struct gpu_left {
  * cache gives buffers back the same way). At most GPU_KEPT_BYTES are kept (the one kept longest
  * makes way), none for longer than GPU_KEPT_SECONDS. rc.jobs.fps, Search: 8 such textures made
  * slowly instead of 77, the window server's frames drawn in 6.8 ms instead of 9.3-10 (median).
+ *
+ * What is kept is wired memory, and every program that draws with the GPU is a client with its own:
+ * the window server, SpringBoard, each application, each of Safari's web pages. A client's are only
+ * looked at again when it asks for a buffer, so one gone quiet -- an application in the background, a
+ * page left behind -- kept its 160 MB for as long as it lived. A few of those, and the memory that is
+ * left is too little: a browsing session went from slow to a standstill as the kernel killed daemon
+ * after daemon (the "iokit" owner of wired memory grew by 650 MB in two and a half minutes of opening
+ * and closing applications). So all clients together keep at most GPU_KEPT_ALL_BYTES -- a client that
+ * would go past it gives up its own oldest, and when it has none left the buffer is let go -- and
+ * with less than GPU_KEEP_LOW_MB of memory available, nothing is kept and a client giving one back
+ * lets go of all it kept.
  */
 struct gpu_kept {
 	IOMemoryDescriptor *            memory;         /* NULL: this place is free */
@@ -458,6 +471,16 @@ struct gpu_kept {
 #define GPU_KEPT_BYTES          (160ull << 20)
 #define GPU_KEPT_SECONDS        60              /* a buffer not asked for again in so long is let go */
 #define GPU_KEEP_FROM           (256u << 10)    /* bytes: smaller ones are not worth it */
+#define GPU_KEPT_ALL_BYTES      (128ull << 20)  /* all clients' together, at most */
+#define GPU_KEEP_LOW_MB         1024            /* with less memory available than this, none kept */
+static uint64_t gGPUKeptAll, gGPULiveAll;        /* every client's, with gGPULock held */
+static uint32_t gGPUClients;
+
+static bool
+gpu_memory_low(void)
+{
+	return (((uint64_t) memorystatus_available_pages * PAGE_SIZE) >> 20) < GPU_KEEP_LOW_MB;
+}
 static TUNABLE(uint32_t, gGPUKeep, "gpu_keep", 1);      /* boot-arg gpu_keep=0 (a test): none kept; gpu_keep=2: kept ones cleared when given again */
 
 class HakiosGPUUserClient : public IOUserClient
@@ -526,7 +549,13 @@ HakiosGPUUserClient::start(IOService * provider)
 		return false;
 	}
 	fBuffers = IONewZero(struct gpu_buffer, GPU_BUFFERS);
-	return fBuffers != NULL;
+	if (fBuffers == NULL) {
+		return false;
+	}
+	IOLockLock(gGPULock);
+	gGPUClients++;
+	IOLockUnlock(gGPULock);
+	return true;
 }
 
 /*
@@ -549,6 +578,7 @@ HakiosGPUUserClient::freeBuffer(struct gpu_buffer * slot)
 	slot->client = false;
 	fBufferCount--;
 	fBufferBytes -= b->size;
+	gGPULiveAll -= b->size;
 
 	bool busy = hakios_gpu_ready() && b->fence != 0 && !hakios_gpu_done(b->fence);
 
@@ -639,6 +669,7 @@ HakiosGPUUserClient::clientClose(void)
 		for (uint32_t i = 0; i < GPU_KEPT; i++) {
 			dropKept(&fKept[i]);
 		}
+		gGPUClients--;
 		if (fLeftCount != 0) {
 			IOLog("HakiosGPU: the GPU is not done with %u buffers of a program that is gone: they stay its own\n", fLeftCount);
 		}
@@ -724,6 +755,7 @@ HakiosGPUUserClient::newBuffer(IOMemoryDescriptor * memory, uint64_t from, uint6
 	b->client = false;
 	fBufferCount++;
 	fBufferBytes += size;
+	gGPULiveAll += size;
 	return b;
 }
 
@@ -741,6 +773,7 @@ HakiosGPUUserClient::dropKept(struct gpu_kept * k)
 	k->memory->release();
 	k->memory = NULL;
 	fKeptBytes -= k->size;
+	gGPUKeptAll -= k->size;
 }
 
 /* With the lock held, the GPU done with the buffer: kept if it is worth it (those kept longest make way). */
@@ -751,6 +784,12 @@ HakiosGPUUserClient::keep(IOMemoryDescriptor * memory, uint8_t * kernel, uint64_
 
 	if (gGPUKeep == 0 || size < GPU_KEEP_FROM || size > GPU_KEPT_BYTES / 4 || memory == NULL ||
 	    (kernel == NULL && OSDynamicCast(IOBufferMemoryDescriptor, memory) == NULL)) {
+		return false;
+	}
+	if (gpu_memory_low()) {
+		for (uint32_t i = 0; i < GPU_KEPT; i++) {
+			dropKept(&fKept[i]);
+		}
 		return false;
 	}
 	for (;;) {
@@ -764,8 +803,11 @@ HakiosGPUUserClient::keep(IOMemoryDescriptor * memory, uint8_t * kernel, uint64_
 				oldest = &fKept[i];
 			}
 		}
-		if (place != NULL && fKeptBytes + size <= GPU_KEPT_BYTES) {
+		if (place != NULL && fKeptBytes + size <= GPU_KEPT_BYTES && gGPUKeptAll + size <= GPU_KEPT_ALL_BYTES) {
 			break;
+		}
+		if (oldest == NULL) {
+			return false;           /* the others' keep the rest: this one is let go */
 		}
 		dropKept(oldest);
 	}
@@ -776,6 +818,7 @@ HakiosGPUUserClient::keep(IOMemoryDescriptor * memory, uint8_t * kernel, uint64_
 	place->flags = flags;
 	place->since = mach_absolute_time();
 	fKeptBytes += size;
+	gGPUKeptAll += size;
 	return true;
 }
 
@@ -820,9 +863,11 @@ HakiosGPUUserClient::gemNew(struct msm_gem_new * request)
 			fNextBuffer = h + 1;
 			fBufferCount++;
 			fBufferBytes += size;
+			gGPULiveAll += size;
 			request->handle = h + 1;
 			found->memory = NULL;
 			fKeptBytes -= size;
+			gGPUKeptAll -= size;
 			gGPUStat.given_again++;
 			IOLockUnlock(gGPULock);
 			if (gGPUKeep == 2) {
@@ -1206,13 +1251,13 @@ HakiosGPUUserClient::submit(struct msm_gem_submit * request)
 		IOLog("HakiosGPU: %u submissions in %llu ms: %u command buffers and %u buffers named, %llu KB out of the cache "
 		    "in %llu us a submission; the GPU worked %llu us on each of %u (%u under 0.1 ms, %u under 0.25, %u under 0.5, "
 		    "%u under 1, %u under 2, %u under 4, %u longer; %llu ms in all); %u waits of %llu us, %u over before they "
-		    "began; %u IOSurfaces taken as buffers in %llu us each; %u buffers, %llu MB\n",
+		    "began; %u IOSurfaces taken as buffers in %llu us each; %u buffers, %llu MB (all %u clients: %llu MB, %llu MB kept)\n",
 		    gGPUStat.submissions, nanos / NSEC_PER_MSEC, gGPUStat.commands, gGPUStat.buffers,
 		    (gGPUStat.flushed >> 10) / gGPUStat.submissions, flushing / NSEC_PER_USEC / gGPUStat.submissions,
 		    timed ? worked / timed : 0, timed, by[0], by[1], by[2], by[3], by[4], by[5], by[6], worked / 1000,
 		    gGPUStat.waits, gGPUStat.waits ? waiting / NSEC_PER_USEC / gGPUStat.waits : 0, gGPUStat.over,
 		    gGPUStat.surfaces, gGPUStat.surfaces ? taking / NSEC_PER_USEC / gGPUStat.surfaces : 0, fBufferCount,
-		    fBufferBytes >> 20);
+		    fBufferBytes >> 20, gGPUClients, gGPULiveAll >> 20, gGPUKeptAll >> 20);
 		bzero(&gGPUStat, sizeof(gGPUStat));
 	}
 	IOLockUnlock(gGPULock);
@@ -1368,7 +1413,49 @@ HakiosGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
 			copyout(&zero, (user_addr_t) r.query.data, sizeof(zero));
 		}
 		break;
-	case kDrmGemClose:
+	case kDrmGemClose: {
+		/*
+		 * The client's mappings of the buffer go with it. A program unmaps a buffer before it closes it
+		 * (IOConnectUnmapMemory64), but IOKit finds the mapping to take away by asking the buffer's memory for
+		 * any mapping of it in the program that would do, with no regard to the address it was given
+		 * (IOMemoryMap::copyCompatible, kIOMapAnywhere): and a surface's memory is mapped in the program a second
+		 * time, whole, by IOSurface itself, for the processor. That one would do, so the unmapping took a view
+		 * of it and let the view go, and the GPU's mapping stayed with the client -- and with it the surface's
+		 * memory, wired, for as long as the program lived: the window server and chronod left one behind for
+		 * nearly every surface they ever drew from, and a browsing session ran the phone out of memory in
+		 * minutes. So what this client still has mapped of the buffer is taken away here, by the memory it is
+		 * of (a surface's mapping is of the surface's memory: its buffer is a window on it).
+		 */
+		IOMemoryDescriptor * mapped = NULL;
+
+		IOLockLock(gGPULock);
+		b = buffer(r.close.handle);
+		if (b != NULL) {
+			mapped = b->surface != NULL ? b->surface->memory : b->memory;
+			mapped->retain();
+		}
+		IOLockUnlock(gGPULock);
+		if (mapped != NULL) {
+			IOMemoryMap * map;
+			uint32_t taken = 0;
+
+			while ((map = removeMappingForDescriptor(mapped)) != NULL) {
+				map->release();                 /* (the last reference: the program's mapping goes with it) */
+				taken++;
+			}
+			mapped->release();
+			if (taken != 0) {
+				static uint32_t told;
+
+				if (told++ < 4) {
+					char who[32];
+
+					proc_selfname(who, sizeof(who));
+					IOLog("HakiosGPU: %s closed buffer %u with %u mappings of it left: taken away\n", who,
+					    r.close.handle, taken);
+				}
+			}
+		}
 		IOLockLock(gGPULock);
 		b = buffer(r.close.handle);
 		if (b == NULL) {
@@ -1379,6 +1466,7 @@ HakiosGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
 		}
 		IOLockUnlock(gGPULock);
 		break;
+	}
 	case kHakiosSurface:
 		ret = surfaceBuffer(&r.surface);
 		break;

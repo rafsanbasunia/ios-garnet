@@ -43,6 +43,8 @@ public:
     void* contents() const { return bo_->cpu(); }
     uint64_t gpuAddress() const { return bo_->gpuAddress(); }
     const Bo& bo() const { return *bo_; }
+    // the Bo itself, out of the Buffer: for a Buffer going away whose handle another Buffer has too (surfaceBuffer)
+    std::unique_ptr<Bo> takeBo() { return std::move(bo_); }
 
 private:
     std::unique_ptr<Bo> bo_;

@@ -98,6 +98,10 @@ display_probe	k
 epoch	k
 fb_beam	k
 fb_beat	k
+fb_bl	k
+fb_bl_dsi	k
+fb_bl_log	k
+fb_bl_min	k
 fb_ca_hz	k
 fb_diff	k
 fb_filter	k
@@ -171,6 +175,7 @@ hv_wdt_pet	k
 loader_return_after	kl
 m2v_utrace	u
 machine_name	k
+mem_owners	k
 membench	k
 metal	ku
 metal_all	u
@@ -240,6 +245,8 @@ net_names	k
 net_trace	k
 pmic	k
 pmic_list	k
+press_count	k
+press_key	k
 press_power	k
 press_power_ms	k
 privs	k

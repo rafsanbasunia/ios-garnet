@@ -26,6 +26,9 @@
 #include <pexpert/arm64/board_config.h>
 #include <vm/vm_page.h>
 #include <vm/vm_compressor.h>
+#include <vm/vm_kern.h>
+#include <kern/kalloc.h>
+#include <mach_debug/zone_info.h>
 
 /*
  * The console log handed back to the loader. A long session writes more than fits, and both
@@ -553,6 +556,91 @@ hakios_memory_line(char *buf, size_t len)
 #undef MB
 }
 
+/*
+ * boot-arg mem_owners=1: who holds the wired memory, after the line above and twice as often (every
+ * 30 s). The kernel keeps wired memory by owner -- a tag per subsystem (iokit, kalloc, ...), per
+ * named site, or per place in the kernel that allocated it -- and zones by name; zprint shows the
+ * same from the outside (mach_memory_info). The largest of each, in megabytes, and what the tags
+ * add up to: the rest of "wired" is pages wired in programs' own memory (an IOMemoryDescriptor
+ * prepared on them, mlock) and the RAM disks. A "site" is an address in the kernel, as unslid: the
+ * unstripped kernel's symbols name it.
+ */
+static uint32_t memory_owners;
+
+static const char *const memory_tag_names[VM_KERN_MEMORY_FIRST_DYNAMIC] = {
+	"none", "osfmk", "bsd", "iokit", "libkern", "oskext", "kext", "ipc", "stack", "cpu", "pmap", "pte", "zone",
+	"kalloc", "compressor", "compressed_data", "phantom_cache", "waitq", "diag", "log", "file", "mbuf", "ubc",
+	"security", "mlock", "reason", "skywalk", "ltable", "hv", "kalloc_data", "retired", "kalloc_type", "triage",
+	"recount",
+};
+
+static void
+memory_owners_report(void)
+{
+#define OWNER_MB(bytes) ((unsigned int)((bytes) >> 20))
+	uint32_t n = vm_page_diagnose_estimate() + 64;
+	vm_size_t size = n * sizeof(mach_memory_info_t);
+	mach_memory_info_t *info = kalloc_data(size, Z_WAITOK);
+	char line[1024];
+
+	if (info == NULL) {
+		printf("memory: owners: no room for %u records\n", n);
+		return;
+	}
+	if (vm_page_diagnose(info, n, 0, false) != KERN_SUCCESS) {
+		printf("memory: owners: not counted\n");
+		kfree_data(info, size);
+		return;
+	}
+	for (int pass = 0; pass < 2; pass++) {          /* the tags' wired memory, then the zones' elements in use */
+		uint64_t total = 0;
+		int k;
+
+		for (uint32_t i = 0; i < n; i++) {
+			uint64_t flags = info[i].flags;
+			bool zone = (flags & (VM_KERN_SITE_ZONE | VM_KERN_SITE_ZONE_VIEW | VM_KERN_SITE_KALLOC)) != 0;
+
+			if ((flags & VM_KERN_SITE_TYPE) == VM_KERN_SITE_COUNTER || (pass == 0 && (zone || !(flags & VM_KERN_SITE_WIRED))) ||
+			    (pass == 1 && !zone)) {
+				info[i].free = 1;               /* (not this pass's: passed over below) */
+				continue;
+			}
+			info[i].free = 0;
+			total += info[i].size;
+		}
+		k = snprintf(line, sizeof(line), pass == 0 ? "memory: wired by owner (MB, tags add up to %u):" :
+		    "memory: zones (MB in use, %u in all):", OWNER_MB(total));
+		for (int j = 0; j < 10 && k < (int)sizeof(line) - 120; j++) {
+			uint32_t best = n;
+
+			for (uint32_t i = 0; i < n; i++) {
+				if (info[i].free == 0 && info[i].size >= (2u << 20) && (best == n || info[i].size > info[best].size)) {
+					best = i;
+				}
+			}
+			if (best == n) {
+				break;
+			}
+			mach_memory_info_t *m = &info[best];
+			uint64_t type = m->flags & VM_KERN_SITE_TYPE;
+
+			if (pass == 1 || (m->flags & VM_KERN_SITE_NAMED)) {
+				k += snprintf(line + k, sizeof(line) - (size_t)k, " %.40s %u", m->name, OWNER_MB(m->size));
+			} else if (type == VM_KERN_SITE_TAG && m->site < VM_KERN_MEMORY_FIRST_DYNAMIC) {
+				k += snprintf(line + k, sizeof(line) - (size_t)k, " %s %u", memory_tag_names[m->site], OWNER_MB(m->size));
+			} else if (type == VM_KERN_SITE_KMOD) {
+				k += snprintf(line + k, sizeof(line) - (size_t)k, " kmod%llu(tag %u) %u", m->site, m->tag, OWNER_MB(m->size));
+			} else {
+				k += snprintf(line + k, sizeof(line) - (size_t)k, " site%#llx(tag %u) %u", m->site, m->tag, OWNER_MB(m->size));
+			}
+			m->free = 1;
+		}
+		printf("%s\n", line);
+	}
+	kfree_data(info, size);
+#undef OWNER_MB
+}
+
 static void
 memory_report(void)
 {
@@ -560,6 +648,9 @@ memory_report(void)
 
 	hakios_memory_line(line, sizeof(line));
 	printf("%s", line);
+	if (memory_owners) {
+		memory_owners_report();
+	}
 	hakios_adreno_minute();                /* (and how warm the GPU is, if it is in use) */
 }
 
@@ -578,7 +669,7 @@ hv_wdt_pet(__unused thread_call_param_t p0, __unused thread_call_param_t p1)
 		__asm__ volatile ("smc #0" : "+r" (x0), "+r" (x1), "+r" (x2), "+r" (x3) : :
 		    "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17");
 	}
-	if (++loader_live.heartbeat % MEMORY_REPORT_BEATS == 0) {
+	if (++loader_live.heartbeat % (memory_owners ? MEMORY_REPORT_BEATS / 2 : MEMORY_REPORT_BEATS) == 0) {
 		memory_report();
 	}
 
@@ -591,6 +682,7 @@ static void
 hv_wdt_pet_init(void)
 {
 	PE_parse_boot_argn("hv_wdt_pet", &hv_wdt_enabled, sizeof(hv_wdt_enabled));
+	PE_parse_boot_argn("mem_owners", &memory_owners, sizeof(memory_owners));
 	hv_wdt_call = thread_call_allocate(hv_wdt_pet, NULL);
 	hv_wdt_pet(NULL, NULL);
 }

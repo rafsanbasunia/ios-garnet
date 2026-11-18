@@ -200,6 +200,10 @@ public:
     // a Bo whose handle another Bo already owns (surfaceBo's second answer for a surface): its mapping undone, the
     // handle left open for the owner to close
     void disown(std::unique_ptr<Bo> bo);
+    // as disown, but the mapping left as it is: a second Bo over a surface the client has a handle for already. IOKit
+    // gives the second mapping of the same memory as the first one -- the same address, the same mapping -- so
+    // unmapping it would take the live Bo's away; the kernel takes the handle's mappings away when it is closed.
+    void forget(std::unique_ptr<Bo> bo);
 
     // a submission queue of its own (the driver keeps an order per queue); 0 is the default one
     int newQueue(uint32_t priority, uint32_t* id);
