@@ -23,6 +23,9 @@
  * header of seven bytes (0 request, 2 answer, 4 indication; the transaction; the message; the length) and then
  * type-length-value fields.
  *
+ * The ones that are written may be written by any user: SpringBoard, which asks for calls in the Phone application's
+ * place (userland/src/inject_sb.c), runs as the user, not as root. An application in its sandbox may write no sysctl.
+ *
  * What a call needs besides this, and does not have here: its sound. The modem's voice path to the speakers and from
  * the microphones is the audio DSP's business, and nothing of it is set up: a call made here is silent on this end.
  *
@@ -494,7 +497,7 @@ sysctl_dial SYSCTL_HANDLER_ARGS
 	printf("voice: asked to call %s: %s\n", number, error == 0 ? "sent to the modem" : "NOT SENT");
 	return error;
 }
-SYSCTL_PROC(_kern_hakios, OID_AUTO, cellular_dial, CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_LOCKED, 0, 0, sysctl_dial, "A",
+SYSCTL_PROC(_kern_hakios, OID_AUTO, cellular_dial, CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_ANYBODY | CTLFLAG_LOCKED, 0, 0, sysctl_dial, "A",
     "write a number: a voice call is made to it");
 
 /* Answer or end: the id written, or with 0 the call that rings (answer) or every call (end). */
@@ -530,7 +533,7 @@ sysctl_answer SYSCTL_HANDLER_ARGS
 #pragma unused(arg1, arg2)
 	return call_command(oidp, req, VOICE_ANSWER_CALL);
 }
-SYSCTL_PROC(_kern_hakios, OID_AUTO, cellular_answer, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, 0, 0, sysctl_answer, "I",
+SYSCTL_PROC(_kern_hakios, OID_AUTO, cellular_answer, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_ANYBODY | CTLFLAG_LOCKED, 0, 0, sysctl_answer, "I",
     "write a call's id (0: the one that rings): it is answered");
 
 static int
@@ -539,7 +542,7 @@ sysctl_hangup SYSCTL_HANDLER_ARGS
 #pragma unused(arg1, arg2)
 	return call_command(oidp, req, VOICE_END_CALL);
 }
-SYSCTL_PROC(_kern_hakios, OID_AUTO, cellular_hangup, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, 0, 0, sysctl_hangup, "I",
+SYSCTL_PROC(_kern_hakios, OID_AUTO, cellular_hangup, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_ANYBODY | CTLFLAG_LOCKED, 0, 0, sysctl_hangup, "I",
     "write a call's id (0: every call): it is ended");
 
 static int
@@ -606,7 +609,7 @@ sysctl_ussd SYSCTL_HANDLER_ARGS
 	    "sent to the modem" : "NOT SENT");
 	return error;
 }
-SYSCTL_PROC(_kern_hakios, OID_AUTO, cellular_ussd, CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_LOCKED, 0, 0, sysctl_ussd, "A",
+SYSCTL_PROC(_kern_hakios, OID_AUTO, cellular_ussd, CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_ANYBODY | CTLFLAG_LOCKED, 0, 0, sysctl_ussd, "A",
     "write a USSD code, or the answer the network waits for");
 
 static int
@@ -651,5 +654,5 @@ sysctl_ussd_cancel SYSCTL_HANDLER_ARGS
 	lck_mtx_unlock(&voice_lock);
 	return error;
 }
-SYSCTL_PROC(_kern_hakios, OID_AUTO, cellular_ussd_cancel, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_LOCKED, 0, 0, sysctl_ussd_cancel,
+SYSCTL_PROC(_kern_hakios, OID_AUTO, cellular_ussd_cancel, CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_ANYBODY | CTLFLAG_LOCKED, 0, 0, sysctl_ussd_cancel,
     "I", "write 1: the USSD session is ended");
