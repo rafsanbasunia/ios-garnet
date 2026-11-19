@@ -32,8 +32,8 @@ Status: November 2026.
 ## What does not work (yet)
 
 - Bluetooth, camera, sensors, GPS.
-- Cellular: calls have no sound; no SMS; the Phone icon gives a plain prompt for a number or a USSD code, not the
-  Phone application;
+- Cellular: calls have no sound; no SMS; the Phone application dials, but a call's screen is a plain prompt and
+  calls are not listed under Recents;
   off unless asked for, and the phone has to be restarted after a session with it
   ([docs/garnet/CELLULAR.md](docs/garnet/CELLULAR.md)).
 - Audio: no microphones, no headphones, no Bluetooth audio, no calls; the earpiece is not a route of its own.

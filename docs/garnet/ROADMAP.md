@@ -8,7 +8,8 @@ Development happens on the `dev` branch; `main` holds what works.
 - Faster Control Center (two full-screen passes).
 - 120 Hz display, GPU power management.
 - Wi-Fi: WPA3, active scanning on 5 GHz.
-- Cellular: the sound of a call, SMS, the Phone application; the restart needed after a session with the modem.
+- Cellular: the sound of a call, SMS, the call screen and the list of recent calls; the restart needed after a
+  session with the modem.
 - Microphones, Bluetooth, camera.
 
 ## iOS 26

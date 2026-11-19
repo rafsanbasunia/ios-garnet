@@ -622,15 +622,14 @@ cellular_hook(void)
  * driver makes calls and sends USSD codes itself (sysctl kern.hakios.cellular_dial, _answer, _hangup, _calls,
  * _call_state, _ussd, _ussd_state, _ussd_reply: drivers/modem/hakios.voice.c), so while the modem is up SpringBoard
  * asks in the application's place:
- *   - a tap on the Phone icon shows a prompt for a number or a USSD code (one that begins with * or # or ends with #);
+ *   - the Phone application's call button comes to the driver through the library inside it (inject_phone.c);
  *   - a call coming in shows a prompt to answer or decline it, a call under way one to end it;
  *   - what the network answers to a USSD code is shown, with a field when it waits for an answer.
  * A call has no sound yet (the modem's voice path is not set up in the audio DSP): the prompts say so.
  */
 static id phone_alert;                  /* the prompt on the screen, if there is one */
-static int phone_alert_kind;            /* 0 none, 1 the dialer, 2 a call coming in, 3 a call under way, 4 USSD */
-static bool phone_ussd_asked;           /* a code was sent from here, and its answer has not been shown */
-static void (*original_icon_tapped)(id self, SEL sel, id icon_view);
+static int phone_alert_kind;            /* 0 none, 2 a call coming in, 3 a call under way, 4 USSD */
+static bool phone_ussd_asked;           /* a code was sent, and its answer has not been shown */
 
 static id
 phone_string(const char *text)
@@ -672,15 +671,48 @@ phone_sysctl_set(const char *name, int value)
 	return result;
 }
 
-/* The view controller a prompt is shown from: whatever is on top of the window that has the keyboard. */
+/*
+ * The view controller a prompt is shown from. The prompts have a window of their own, above the windows that
+ * applications are shown in: a call is answered or ended from whatever is on the screen.
+ */
+static id phone_window;
+
 static id
 phone_presenter(void)
 {
-	Class app_class = objc_getClass("UIApplication");
+	Class app_class = objc_getClass("UIApplication"), window_class = objc_getClass("UIWindow"), scene_class = objc_getClass("UIWindowScene");
 	id app = app_class ? ((id (*)(Class, SEL))objc_msgSend)(app_class, sel_registerName("sharedApplication")) : nil;
-	id window = app ? ((id (*)(id, SEL))objc_msgSend)(app, sel_registerName("keyWindow")) : nil;
-	id controller = window ? ((id (*)(id, SEL))objc_msgSend)(window, sel_registerName("rootViewController")) : nil;
+	id controller;
 
+	if (phone_window == nil && app != nil && window_class != Nil && scene_class != Nil) {
+		id scenes = ((id (*)(id, SEL))objc_msgSend)(((id (*)(id, SEL))objc_msgSend)(app, sel_registerName("connectedScenes")),
+		                sel_registerName("allObjects"));
+		unsigned long count = scenes ? ((unsigned long (*)(id, SEL))objc_msgSend)(scenes, sel_registerName("count")) : 0;
+		id scene = nil;
+
+		for (unsigned long n = 0; n < count && scene == nil; n++) {
+			id one = ((id (*)(id, SEL, unsigned long))objc_msgSend)(scenes, sel_registerName("objectAtIndex:"), n);
+
+			if (((BOOL (*)(id, SEL, Class))objc_msgSend)(one, sel_registerName("isKindOfClass:"), scene_class)) {
+				scene = one;
+			}
+		}
+		if (scene != nil) {
+			id root = ((id (*)(id, SEL))objc_msgSend)(((id (*)(Class, SEL))objc_msgSend)(objc_getClass("UIViewController"),
+			              sel_registerName("alloc")), sel_registerName("init"));
+
+			phone_window = ((id (*)(id, SEL, id))objc_msgSend)(((id (*)(Class, SEL))objc_msgSend)(window_class, sel_registerName("alloc")),
+			                   sel_registerName("initWithWindowScene:"), scene);
+			/* (UIWindowLevelAlert: above the application on the screen) */
+			((void (*)(id, SEL, double))objc_msgSend)(phone_window, sel_registerName("setWindowLevel:"), 2000.0);
+			((void (*)(id, SEL, id))objc_msgSend)(phone_window, sel_registerName("setRootViewController:"), root);
+		}
+	}
+	if (phone_window == nil) {
+		return nil;
+	}
+	((void (*)(id, SEL))objc_msgSend)(phone_window, sel_registerName("makeKeyAndVisible"));
+	controller = ((id (*)(id, SEL))objc_msgSend)(phone_window, sel_registerName("rootViewController"));
 	for (int depth = 0; controller != nil && depth < 8; depth++) {
 		id next = ((id (*)(id, SEL))objc_msgSend)(controller, sel_registerName("presentedViewController"));
 
@@ -692,6 +724,15 @@ phone_presenter(void)
 	return controller;
 }
 
+/* No prompt is left: the window goes, and with it what it kept of the touches. */
+static void
+phone_window_hide(void)
+{
+	if (phone_window != nil) {
+		((void (*)(id, SEL, BOOL))objc_msgSend)(phone_window, sel_registerName("setHidden:"), YES);
+	}
+}
+
 static void
 phone_dismiss(void)
 {
@@ -701,6 +742,7 @@ phone_dismiss(void)
 		phone_alert = nil;
 	}
 	phone_alert_kind = 0;
+	phone_window_hide();
 }
 
 /* The text of the prompt's field, in a buffer of ours ("" when there is no field). */
@@ -749,6 +791,7 @@ phone_prompt(int kind, const char *title, const char *message, bool field, const
 				((void (*)(id, SEL))objc_msgSend)(phone_alert, sel_registerName("release"));
 				phone_alert = nil;
 			}
+			phone_window_hide();
 			if (first_does) {
 				first_does(text);
 			}
@@ -765,6 +808,7 @@ phone_prompt(int kind, const char *title, const char *message, bool field, const
 				((void (*)(id, SEL))objc_msgSend)(phone_alert, sel_registerName("release"));
 				phone_alert = nil;
 			}
+			phone_window_hide();
 			if (second_does) {
 				second_does(text);
 			}
@@ -774,33 +818,6 @@ phone_prompt(int kind, const char *title, const char *message, bool field, const
 	phone_alert = ((id (*)(id, SEL))objc_msgSend)(alert, sel_registerName("retain"));
 	phone_alert_kind = kind;
 	say("hakios: phone: prompt %d shown: \"%s\"\n", kind, title);
-}
-
-/* What was typed into the dialer: a USSD code, or a number to call. */
-static void
-phone_dial(const char *text)
-{
-	size_t n = strlen(text);
-
-	if (n == 0) {
-		return;
-	}
-	if (text[0] == '*' || text[0] == '#' || text[n - 1] == '#') {
-		if (phone_sysctl_write("kern.hakios.cellular_ussd", text) == 0) {
-			phone_ussd_asked = true;
-			say("hakios: phone: a USSD code was sent\n");
-		}
-	} else if (phone_sysctl_write("kern.hakios.cellular_dial", text) == 0) {
-		say("hakios: phone: a call was asked for\n");
-	}
-}
-
-static void
-phone_dialer(void)
-{
-	phone_prompt(1, "Phone", "A number to call, or a USSD code. A call has no sound yet.", true, "Call", ^(const char *text) {
-		phone_dial(text);
-	}, "Cancel", NULL);
 }
 
 /* Once a second: the calls and the USSD session as the kernel has them, and the prompt that goes with them. */
@@ -851,43 +868,16 @@ phone_tick(void)
 	}
 }
 
-/* A tap on an icon of the home screen: the Phone's is ours while the modem is up. */
-static void
-phone_icon_tapped(id self, SEL sel, id icon_view)
-{
-	SEL icon_of = sel_registerName("icon"), bundle_of = sel_registerName("applicationBundleID");
-	id icon = icon_view && class_respondsToSelector(object_getClass(icon_view), icon_of) ?
-	    ((id (*)(id, SEL))objc_msgSend)(icon_view, icon_of) : nil;
-	id bundle = icon && class_respondsToSelector(object_getClass(icon), bundle_of) ? ((id (*)(id, SEL))objc_msgSend)(icon, bundle_of) : nil;
-	const char *name = bundle ? ((const char *(*)(id, SEL))objc_msgSend)(bundle, sel_registerName("UTF8String")) : NULL;
-
-	if (name != NULL && strcmp(name, "com.apple.mobilephone") == 0 && sysctl_int("kern.hakios.cellular_up") > 0) {
-		say("hakios: phone: the Phone icon was tapped: the dialer of ours\n");
-		phone_dialer();
-		return;
-	}
-	original_icon_tapped(self, sel, icon_view);
-}
-
 static void
 phone_hook(void)
 {
-	static const char *const classes[] = { "SBHIconManager", "SBIconController" };
 	dispatch_source_t timer;
+	int token;
 
-	for (unsigned c = 0; c < sizeof(classes) / sizeof(classes[0]) && original_icon_tapped == NULL; c++) {
-		Class cls = objc_getClass(classes[c]);
-		Method method = cls ? class_getInstanceMethod(cls, sel_registerName("iconTapped:")) : NULL;
-
-		if (method != NULL) {
-			original_icon_tapped = (void (*)(id, SEL, id))method_getImplementation(method);
-			method_setImplementation(method, (IMP)phone_icon_tapped);
-			say("hakios: phone: -[%s iconTapped:] replaced: the Phone icon asks for a number while the modem is up\n", classes[c]);
-		}
-	}
-	if (original_icon_tapped == NULL) {
-		say("hakios: phone: no iconTapped: to replace: calls coming in are still shown\n");
-	}
+	/* the library inside the Phone application says that it sent a USSD code (inject_phone.c) */
+	notify_register_dispatch("com.hakios.phone.ussd", &token, dispatch_get_main_queue(), ^(__unused int t) {
+		phone_ussd_asked = true;
+	});
 	timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
 	dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC), NSEC_PER_SEC, NSEC_PER_SEC / 4);
 	dispatch_source_set_event_handler(timer, ^{

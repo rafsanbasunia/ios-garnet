@@ -8,18 +8,20 @@ cards (both slots) and registers with the network (LTE). Then:
 - the status bar shows the signal's bars, and the operator's name where the bar has room for it;
 - mobile data: a data session is started, its interface (`en1`) is configured by itself, and the system uses it
   (DNS, HTTP and HTTPS were fetched over it with Wi-Fi off);
-- the Phone icon: while the modem is up, a tap on it asks for a number or a USSD code (SpringBoard asks, in the
-  Phone application's place);
+- the Phone application: its keypad, and its tabs for favorites, recent calls and contacts. Its call button
+  calls the number, or sends the USSD code, that is on the keypad;
 - USSD: a code is sent and the network's answer shown, in whatever script it comes, with a field when the network
   waits for an answer;
-- calls: a call can be made and ended, and one that comes in answered or declined, from prompts on the screen, but
-  **without sound**: the path between the modem and the speakers and microphones is not set up.
+- calls: a call can be made and ended, and one that comes in answered or declined, from prompts shown over
+  whatever is on the screen, but **without sound**: the path between the modem and the speakers and microphones
+  is not set up.
 
 The modem is stopped and shut down when the session ends.
 
-Not done: the sound of a call, SMS, 5G (not tried), IPv6, choosing between the two SIMs, the Phone application
-itself and the Settings pages (there is no baseband of Apple's for them to talk to: calls and USSD go through the
-prompts, the program `cell_test`, or the sysctls below). A call that comes in has not been tried.
+Not done: the sound of a call, SMS, 5G (not tried), IPv6, choosing between the two SIMs, the call screen of
+Darwin's (a call's screen is a plain prompt), the list of recent calls (calls are not written into it), voicemail,
+and the Settings pages: there is no baseband of Apple's for them to talk to. A call that comes in has not been
+tried, nor a call from the contacts or the favorites.
 
 It is off unless asked for, for two reasons: it needs the phone's storage read through the loader (`ufs=2`), and
 after a session with the modem the phone has to be restarted before the system is started again (below; the loader
@@ -66,9 +68,11 @@ Calls and USSD are `drivers/modem/hakios.voice.c`, a client of the modem's voice
 | `kern.hakios.cellular_ussd_cancel` | write 1: the USSD session is ended |
 
 `userland/src/cell_test.c` is a small program over them (`status`, `data`, `ussd`, `dial`, `pickup`, `hangup`,
-`calls`), and SpringBoard's library (`userland/src/inject_sb.c`) puts prompts on the screen for them: the Phone icon's
-tap, a call coming in or under way, a USSD answer. The sysctls that are written may be written by any user, since
-SpringBoard is not root; an application in its sandbox may write none.
+`calls`). The library inside the Phone application (`userland/src/inject_phone.c`) gives them what its call button
+asks for: the application has no daemon of Darwin's to hand a call to, and is given a contact store, a provider
+of telephone calls and the answer that the phone can make them. SpringBoard's library (`userland/src/inject_sb.c`)
+puts the prompts on the screen, in a window above the applications: a call coming in or under way, a USSD answer.
+The sysctls that are written may be written by any user: neither SpringBoard nor the Phone application is root.
 
 ## Findings
 
