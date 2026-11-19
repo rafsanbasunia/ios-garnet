@@ -183,6 +183,12 @@ run() { # run <oem command> <label>
 		echo "xl: warning: a kernel has already run in this session of the loader, and a second one has died at once every time it was tried"
 	fi
 	enter || return 1
+	# A kernel that started the modem leaves the loader with this said: a second kernel in the same session hangs
+	# (docs/garnet/CELLULAR.md), so the loader starts none, and neither is one sent.
+	if fb getvar restart-first | grep -q 'restart-first: yes'; then
+		echo "xl: the modem ran in this session of the loader: restart the phone first (xl reboot), then run again"
+		return 1
+	fi
 	exec 8> $PHONE.run
 	flock -n 8 || { echo "xl: a run is in progress, started from $(cat $PHONE.who 2>/dev/null) (xl stop ends it)"; return 1; }
 	pwd > $PHONE.who

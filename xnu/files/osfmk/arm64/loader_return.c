@@ -56,6 +56,7 @@ extern void hakios_adsp_stop(void);
 extern void hakios_adsp_quiesce(void);
 extern void hakios_mpss_stop(void);
 extern void hakios_mpss_quiesce(void);
+extern bool hakios_mpss_ran(void);
 extern void hakios_ddr_quiesce(void);
 extern void hakios_haptic_quiesce(void);
 extern void hakios_torch_quiesce(void);
@@ -363,6 +364,8 @@ loader_log_append_msgbuf(void)
 	}
 }
 
+#define LOADER_RESTART_FIRST    0x52535452ull           /* "RSTR"; the loader knows the same number */
+
 void
 loader_return(void)
 {
@@ -400,7 +403,11 @@ loader_return(void)
 			loader_log_putc(*c);
 		}
 	}
-	loader_jump(0, 0);
+	/*
+	 * The code tells the loader what it has to know of this run: LOADER_RESTART_FIRST when the modem was started
+	 * (the loader then starts no other kernel until the phone has been restarted: drivers/modem/hakios.mpss.c).
+	 */
+	loader_jump(0, hakios_mpss_ran() ? LOADER_RESTART_FIRST : 0);
 }
 
 /* Bring-up aid: stop here if the loader asked for checkpoint n. */

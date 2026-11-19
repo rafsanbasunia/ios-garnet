@@ -27,6 +27,7 @@ void hakios_adsp_stop(void);
 void hakios_adsp_quiesce(void);
 void hakios_mpss_stop(void);
 void hakios_mpss_quiesce(void);
+bool hakios_mpss_ran(void);
 void hakios_ddr_quiesce(void);
 void hakios_ufs_quiesce(void);
 void hakios_var_save_on_return(void);
@@ -114,6 +115,7 @@ void hakios_adsp_quiesce(void) {}
 void hakios_mpss_init(void) {}
 void hakios_mpss_stop(void) {}
 void hakios_mpss_quiesce(void) {}
+bool hakios_mpss_ran(void) { return false; }
 #endif
 
 #ifndef HAKIOS_VIRTIO_NET

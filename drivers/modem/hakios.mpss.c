@@ -2465,6 +2465,8 @@ ipa_firmware_stop(void)
  * is watched for as the audio DSP is (hakios.adsp.c, step 7): its SMP2P item, its doorbells, its
  * "slave-kernel" word, and its last words in item 421 if it gives up.
  */
+static bool modem_ran;                  /* the modem has been let out of reset by this kernel, once at least */
+
 static bool
 step_start(void)
 {
@@ -2536,6 +2538,7 @@ step_start(void)
 		return false;
 	}
 	dsp_started = true;
+	modem_ran = true;
 	lck_mtx_unlock(&dsp_lock);
 	printf("mpss: %u: TRUSTZONE HAS AUTHENTICATED THE IMAGE AND LET THE MODEM OUT OF RESET; watching for %u s\n", step,
 	    wait_seconds);
@@ -6424,6 +6427,19 @@ soc_override(void)
 		printf("mpss: SoC addresses from boot-args: %u register blocks; shared memory %#x, command DB %#x, the modem's "
 		    "memory %#x, the SoC's internal memory %#x\n", said, smem_phys, cmd_db_phys, mpss_memory, ipa_imem);
 	}
+}
+
+/*
+ * Whether the modem was started by this kernel, for the way back to the loader (osfmk/arm64/loader_return.c): a
+ * kernel started after that, in the same session of the loader, hangs within seconds on this phone, so the loader is
+ * told, and it starts no other kernel until the phone has been restarted.
+ */
+bool hakios_mpss_ran(void);
+
+bool
+hakios_mpss_ran(void)
+{
+	return modem_ran;
 }
 
 /* Called while the system starts (drivers/input/hakios.input.c), after the Wi-Fi's start has been set going. */

@@ -9,7 +9,8 @@ operator's name where the bar has room for it. The modem is stopped and shut dow
 Not done: mobile data, SMS, calls, 5G (not tried), choosing between the two SIMs, the Settings pages.
 
 It is off unless asked for, for two reasons: it needs the phone's storage read through the loader (`ufs=2`), and
-after a session with the modem the phone has to be restarted before the system is started again (below).
+after a session with the modem the phone has to be restarted before the system is started again (below; the loader
+sees to it).
 
 ## The hardware
 
@@ -48,12 +49,16 @@ reads (`userland/src/inject_sb.c`).
 - The status bar's setters for the bars and the operator's name take the value alone.
 - The modem's rail is not turned off when it is given back, and CX is left where the start put it.
 
-## Known problem: restart after a session
+## Restart after a session
 
 After a session in which the modem ran, a second start of the system in the same session of the loader hangs about
 ten seconds in (after the memory bandwidth vote, before the processors' frequency is raised); the watchdog then
 restarts the phone, and this phone's firmware answers that with its crash-dump mode (a black screen; holding the
-power button leaves it). Why is not known. Restart the phone after a session with `modem=1`.
+power button leaves it). Why is not known.
+
+So it is not let happen: a kernel that has started the modem says so when it returns (`loader_return.c`), the loader
+then starts no other kernel (`oem run` is refused, `getvar restart-first` says yes), and `xl` and `xl.ps1` say so
+instead of sending one. `xl reboot` restarts the phone; boot the loader again after that.
 
 ## Firmware
 

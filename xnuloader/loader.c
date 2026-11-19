@@ -42,6 +42,8 @@ struct payload_entry { char name[16]; uint32_t size; uint32_t reserved; };
 #define PANIC_LOG_SIZE      0x80000u
 #define NVRAM_BANK_SIZE     0x2000u
 #define PANIC_LOG_BASE      (PAYLOAD_BASE + PAYLOAD_MAX_SIZE - 0x100000ULL)
+#define LOADER_RESTART_FIRST 0x52535452ULL         /* "RSTR": what a kernel that started the modem returns (loader_return.c) */
+static int restart_first;
 #define PAYLOAD_MAX_SIZE    0x04000000ULL         /* RAM reserved for the payload in the UEFI memory map */
 
 /* ------------------------------------------------------------------------ */
@@ -3681,6 +3683,15 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
 			set_result("early-exception", 0, loader_ctx[CTX_ELR]);
 			klog_len = klog_len > (1u << 20) ? 0 : klog_len;
 		} else {
+			/*
+			 * A kernel that started the phone's modem says so (LOADER_RESTART_FIRST): on the POCO X6 5G a kernel
+			 * started after that, without a restart of the phone between, hangs within seconds, and the
+			 * watchdog's reset then ends in the firmware's crash-dump mode. So no other is started.
+			 */
+			if (reason == 0 && loader_ctx[CTX_ESR] == LOADER_RESTART_FIRST) {
+				restart_first = 1;
+				print("the modem ran: no other kernel is started until the phone has been restarted (reboot)\n");
+			}
 			set_result("returned", klog_len, 0);
 		}
 	}
@@ -3927,6 +3938,9 @@ fb_command(char *cmd)
 				fb_reply("OKAY", download_to_ramdisk ? "0xffffffff" : "0x03f00000");
 			} else if (str_eq(var, "result")) {
 				fb_reply("OKAY", last_result);
+			} else if (str_eq(var, "restart-first")) {
+				/* (yes: a kernel started the modem, and no other is started until the phone has been restarted) */
+				fb_reply("OKAY", restart_first ? "yes" : "no");
 			} else if (str_eq(var, "screen") && SCREEN.base != 0) {
 				/* width height bytes-per-row */
 				uint32_t mark = log_len;
@@ -4070,6 +4084,8 @@ fb_command(char *cmd)
 				memset((void *)(uintptr_t)SCREEN.base, 0, (size_t)SCREEN.stride * SCREEN.height);
 			}
 			fb_reply("OKAY", "");
+		} else if (restart_first && starts_with(cmd, "oem run")) {
+			fb_reply("FAIL", "the modem ran in this session: restart the phone first (reboot)");
 		} else if (starts_with(cmd, "oem run") || starts_with(cmd, "oem selftest")) {
 			int selftest = starts_with(cmd, "oem selftest");
 			const char *arg = cmd + 7;

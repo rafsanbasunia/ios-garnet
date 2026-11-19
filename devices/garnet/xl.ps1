@@ -266,6 +266,12 @@ function Build-Payload {
 function Invoke-Run {
     param([string]$OemCmd, [string]$Label)
     if (-not (Invoke-Enter)) { return 1 }
+    # A kernel that started the modem leaves the loader with this said: a second kernel in the same session hangs
+    # (docs/garnet/CELLULAR.md), so the loader starts none, and neither is one sent.
+    if ("$(Invoke-Fastboot @('getvar', 'restart-first'))" -match 'restart-first: yes') {
+        Write-Host 'xl: the modem ran in this session of the loader: restart the phone first (xl.ps1 reboot), then run again' -ForegroundColor Yellow
+        return 1
+    }
     try {
         $script:RunLockStream = [System.IO.File]::Open($script:PhoneRun, 'OpenOrCreate', 'ReadWrite', 'None')
     } catch {
