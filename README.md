@@ -32,8 +32,9 @@ Status: November 2026.
 ## What does not work (yet)
 
 - Camera, sensors, GPS.
-- Bluetooth: iOS's Bluetooth daemon runs on the phone's controller and Settings switches it on and searches
-  ([docs/garnet/BLUETOOTH.md](docs/garnet/BLUETOOTH.md)); finding and pairing a device and audio have not been tried.
+- Bluetooth: Bluetooth LE works through CoreBluetooth (a fitness band found and connected), and Settings switches
+  Bluetooth on and searches ([docs/garnet/BLUETOOTH.md](docs/garnet/BLUETOOTH.md)); pairing a Bluetooth Classic
+  device and audio have not been tried.
 - Cellular: calls have no sound; no SMS; the Phone application dials, but a call's screen is a plain prompt and
   calls are not listed under Recents;
   off unless asked for, and the phone has to be restarted after a session with it

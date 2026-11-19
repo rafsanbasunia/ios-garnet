@@ -869,6 +869,20 @@ my_channel_slot_get_packet(channel_ring_t ring, channel_slot_t slot)
 }
 INTERPOSE(my_channel_slot_get_packet, os_channel_slot_get_packet);
 
+/*
+ * The daemon's quieter messages (the levels "info" and "debug" of its log), on the console with the rest: only with
+ * boot-arg bt_log=1, for finding out what it does with something.
+ */
+extern bool os_log_type_enabled(void *log, uint8_t type);
+static bool log_all;
+
+static bool
+my_log_type_enabled(void *log, uint8_t type)
+{
+	return log_all ? true : os_log_type_enabled(log, type);
+}
+INTERPOSE(my_log_type_enabled, os_log_type_enabled);
+
 __attribute__((constructor))
 static void
 bt_start(void)
@@ -877,6 +891,15 @@ bt_start(void)
 	size_t size = sizeof(text);
 	int state = 0, waited = 0;
 
+	{
+		char line[1024];
+		size_t length = sizeof(line) - 1;
+
+		if (sysctlbyname("kern.bootargs", line, &length, NULL, 0) == 0) {
+			line[length < sizeof(line) ? length : sizeof(line) - 1] = 0;
+			log_all = strstr(line, "bt_log=1") != NULL;
+		}
+	}
 	learned_load();
 	/* the controller is a program's half a minute after the kernel's start: the daemon waits for it here */
 	for (;; waited++) {

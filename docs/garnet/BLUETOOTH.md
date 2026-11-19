@@ -9,10 +9,14 @@ On (`bt=3`) with the phone's Bluetooth firmware in the image (`fw-bt/`, below).
 - the controller for programs: `/dev/hakios-bt` carries HCI in H4 packets both ways (`bt_test` reads the version
   through it and counts advertisements);
 - Darwin's Bluetooth daemon on it: its stack comes up, Settings shows Bluetooth switched on and searches, the
-  daemon scans for Bluetooth LE devices and runs inquiries.
+  daemon scans for Bluetooth LE devices and runs inquiries;
+- Bluetooth LE through CoreBluetooth, as an application uses it: `cb_test` scans for a fitness band's service,
+  finds the band, connects to it and lists its services.
 
-Not tried: finding a device in Settings, pairing, audio. The UART stays at 115200 baud, which is enough for
-commands and Bluetooth LE and not for audio. The phone has no name of its own in Settings ("(null)").
+Not tried: a device found and paired in Settings (Bluetooth Classic), audio. The UART stays at 115200 baud, which
+is enough for commands and Bluetooth LE and not for audio. The phone has no name of its own in Settings
+("(null)"). A program that is not an application in the foreground is given what a scan finds only when it scans
+for services, as on an iPhone: `cb_test 60 band FEE0`.
 
 ## The hardware
 
@@ -75,3 +79,4 @@ phone's `/vendor/bt_firmware/image` (as root) into `fw-bt/`, and `userland/build
 | `bt=4` | and a scan counted in the kernel first, for `bt_scan` seconds (5) |
 | `bt_delay=<s>` | when this begins after the kernel's start (12) |
 | `bt_sample=<n>` | the UART's samples per bit, 16 or 32 (16; the other is tried when the chip does not answer) |
+| `bt_log=1` | the Bluetooth daemon's quieter messages on the console too (a great many) |

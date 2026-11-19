@@ -237,6 +237,10 @@ if [ -d $DARWIN/rootfs/usr/lib ]; then
 		$DYN -o obj/cell_test src/cell_test.c
 		$DYN -o obj/bt_test src/bt_test.c
 		$DYN -o obj/bt_tool src/bt_tool.c
+		# (CoreBluetooth as an application uses it: its entitlements say that it may, there being nobody to ask)
+		$DYN -fobjc-arc -framework Foundation -framework CoreBluetooth -o obj/cb_test src/cb_test.m &&
+			{ ${LDID:-ldid} -Ssrc/cb_test.entitlements obj/cb_test 2>/dev/null ||
+			  echo "build.sh: no ldid: cb_test is unsigned, and the Bluetooth daemon may not let it scan"; }
 		# (with an entitlement for "battery_test open URL", if ldid is there: src/battery_test.c)
 		$DYN -framework CoreFoundation -framework IOKit -lsqlite3 -o obj/battery_test src/battery_test.c &&
 			{ ${LDID:-ldid} -Ssrc/battery_test.entitlements obj/battery_test 2>/dev/null ||
@@ -379,6 +383,7 @@ if [ -d $DARWIN/rootfs/usr/lib ]; then
 	[ -f obj/cell_test ] && cp obj/cell_test root/bin/
 	[ -f obj/bt_test ] && cp obj/bt_test root/bin/
 	[ -f obj/bt_tool ] && cp obj/bt_tool root/bin/
+	[ -f obj/cb_test ] && cp obj/cb_test root/bin/
 	[ -f obj/battery_test ] && cp obj/battery_test root/bin/
 	[ -f obj/keychain_test ] && cp obj/keychain_test root/bin/
 	[ -f obj/wifipw_test ] && cp obj/wifipw_test root/bin/
