@@ -71,6 +71,7 @@ bt_again	k
 bt_delay	k
 bt_sample	k
 bt_scan	k
+bt_slow	k
 buttons	k
 buttons_steps	k
 ca_dirty	u

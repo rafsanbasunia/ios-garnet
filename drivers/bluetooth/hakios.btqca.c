@@ -19,8 +19,8 @@
  *      (apbtfwNN.tlv and apnvNN.bin for the 0x4009 chips) of the phone's /vendor/bt_firmware/image, which are
  *      NOT in the repository: they are read from fw/ of the image;
  *   5. HCI reset, and from there plain HCI in H4 packets.
- * The chip's sleep protocol is answered (it says 0xfd before it sends after a pause, and is told 0xfc), and the
- * UART stays at 115200 baud.
+ * The chip's sleep protocol is answered (it says 0xfd before it sends after a pause, and is told 0xfc). Once the
+ * chip has said which it is, both sides go to 3.2 Mbaud (vendor command 0xfc48, and the same in the settings).
  *
  * Boot-args:
  *   bt=1           the engine looked at: its protocol, its FIFO, the pins (clocks are switched on; nothing else)
@@ -32,6 +32,7 @@
  *   bt_delay=<s>   seconds after the kernel's start at which this begins (12: after the Wi-Fi half has its supplies)
  *   bt_scan=<s>    how long the scan of bt=4 lasts (5)
  *   bt_sample=<n>  the UART's samples per bit, 16 or 32 (16; the other is tried when the chip does not answer)
+ *   bt_slow=1      the UART stays at 115200 baud
  */
 #include <kern/clock.h>
 #include <kern/locks.h>
@@ -366,11 +367,40 @@ clocks_on(void)
 
 static uint32_t tx_depth = 16, rx_depth = 16;
 
+/*
+ * The engine's root clock, of which a bit time is a whole fraction: 7.3728 MHz for the slow speeds, 102.4 MHz
+ * (300 MHz x 128 / 375) for 3.2 Mbaud, as the phone's own kernel has them in its table for this engine.
+ */
+static uint32_t root_hz = ROOT_HZ;
+
+static void
+root_set(uint32_t m, uint32_t n, uint32_t hz)
+{
+	if (root_hz == hz) {
+		return;
+	}
+	wr(GCC_SE_M, m);
+	wr(GCC_SE_N, ~(n - m) & 0xffff);
+	wr(GCC_SE_D, ~n & 0xffff);
+	wr(GCC_SE_CFG_RCGR, 0 | SOURCE_GPLL0_EVEN << 8 | 2u << 12);
+	wr(GCC_SE_CMD_RCGR, rd(GCC_SE_CMD_RCGR) | 1);
+	for (int i = 0; i < 2000 && (rd(GCC_SE_CMD_RCGR) & 1); i++) {
+		sleep_us(10);
+	}
+	root_hz = hz;
+}
+
 static void
 uart_baud(uint32_t baud)
 {
-	uint32_t divider = ROOT_HZ / (baud * sample);
+	uint32_t divider;
 
+	if (baud > 1000000) {
+		root_set(128, 375, 102400000);
+	} else {
+		root_set(384, 15625, ROOT_HZ);
+	}
+	divider = root_hz / (baud * sample);
 	wr(GENI_CLK_SEL, 0);
 	wr(GENI_SER_M_CLK_CFG, divider << 4 | 1);
 	wr(GENI_SER_S_CLK_CFG, divider << 4 | 1);
@@ -510,7 +540,7 @@ uart_send_locked(const uint8_t *bytes, uint32_t count, uint32_t wait_ms)
 			wr(GENI_M_IRQ_CLEAR, 0xffffffff);
 			return false;
 		}
-		sleep_us(count > 32 ? 500 : 100);
+		sleep_us(100);
 	}
 }
 
@@ -747,6 +777,9 @@ command(uint16_t opcode, const uint8_t *parameters, uint8_t count, uint8_t *even
 static uint32_t product_id, soc_id;
 static uint16_t rom_version, patch_version;
 static bool newer;              /* a WCN3991 or later: it answers with "command complete", and its settings differ */
+static bool fast = true;        /* the UART at 3.2 Mbaud once the chip has said which it is (bt_slow=1: at 115200) */
+#define QCA_BAUD_115200         0x00
+#define QCA_BAUD_3200000        0x11
 
 /* The chip switched off and on again with its two bytes; then flow control, and what it said meanwhile dropped. */
 static bool
@@ -851,7 +884,7 @@ download(const char *name, bool is_settings)
 			}
 			if (tag == NVM_TAG_HCI && tag_length >= 3) {
 				settings[at + 12] |= 0x80;
-				settings[at + 12 + (newer ? 1 : 2)] = 0;        /* 115200 baud */
+				settings[at + 12 + (newer ? 1 : 2)] = fast ? QCA_BAUD_3200000 : QCA_BAUD_115200;
 			} else if (tag == NVM_TAG_DEEP_SLEEP && tag_length >= 1) {
 				settings[at + 12] &= (uint8_t)~1u;      /* the chip does not go to sleep on the UART */
 			}
@@ -989,6 +1022,23 @@ chip_start(void)
 	}
 	if (level < 3) {
 		return true;
+	}
+	if (fast) {
+		uint8_t code = QCA_BAUD_3200000;
+
+		/*
+		 * The chip's speed, then ours. Its answer to this comes at the new speed, if it comes: whatever comes in
+		 * the next moments is dropped.
+		 */
+		if (!command_out(0xfc48, &code, 1)) {
+			printf("bt: the command for the UART's speed could not be sent\n");
+			return false;
+		}
+		sleep_ms(10);
+		uart_baud(3200000);
+		sleep_ms(40);
+		uart_flush();
+		printf("bt: the UART is at 3.2 Mbaud\n");
 	}
 	rom = (rom_version & 0xf00) >> 4 | (rom_version & 0xf);
 	apache = soc_id >> 16 == 0x4009;
@@ -1232,7 +1282,7 @@ serve(void)
 		printf("bt: /dev/hakios-bt cannot be made\n");
 		return;
 	}
-	printf("bt: THE CONTROLLER IS A PROGRAM'S (/dev/hakios-bt): HCI in H4 packets, 115200 baud\n");
+	printf("bt: THE CONTROLLER IS A PROGRAM'S (/dev/hakios-bt): HCI in H4 packets, %s baud\n", fast ? "3.2 M" : "115200");
 	controller_up = 2;
 	for (;;) {
 		uart_poll();
@@ -1307,6 +1357,9 @@ bt_init(void)
 	}
 	if (PE_parse_boot_argn("bt_sample", &value, sizeof(value)) && (value == 16 || value == 32)) {
 		sample = value;
+	}
+	if (PE_parse_boot_argn("bt_slow", &value, sizeof(value)) && value != 0) {
+		fast = false;
 	}
 	if (PE_parse_boot_argn("bt_scan", &value, sizeof(value)) && value >= 1 && value <= 120) {
 		scan_seconds = value;

@@ -66,6 +66,7 @@ BT_AGAIN	arg	bt_again	User space	k	hakios.bt.c	the second look this many seconds
 BT_DELAY	arg	bt_delay	User space	k	hakios.btqca.c	seconds after the kernel's start at which this begins (12: after the Wi-Fi half has its supplies)
 BT_SAMPLE	arg	bt_sample	User space	k	hakios.btqca.c	the UART's samples per bit, 16 or 32 (16; the other is tried when the chip does not answer)
 BT_SCAN	arg	bt_scan	User space	k	hakios.btqca.c	how long the scan of bt=4 lasts (5)
+BT_SLOW	arg	bt_slow	User space	k	hakios.btqca.c	the UART stays at 115200 baud
 BUTTONS	arg	buttons	Touch and buttons	k	hakios.buttons.c	
 BUTTONS_STEPS	arg	buttons_steps	Touch and buttons	k	hakios.buttons.c	
 CA_DIRTY	arg	ca_dirty	User space	u	inject.c	

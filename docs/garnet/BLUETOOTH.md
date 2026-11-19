@@ -16,9 +16,8 @@ On (`bt=3`) with the phone's Bluetooth firmware in the image (`fw-bt/`, below).
 - Bluetooth Classic: a pair of earbuds in pairing mode is found in Settings, pairs (without a code) and is
   listed as connected; the daemon connects its A2DP, AVRCP and hands-free profiles.
 
-Not done: sound. Nothing is played through a paired device yet: the UART stays at 115200 baud, which is enough
-for commands and Bluetooth LE and far too slow for audio, and the audio server's side of Bluetooth is not there
-(the daemon finds nobody to hand an audio device to). The phone has no name of its own in Settings ("(null)"). A program that is not an application in the foreground is given what a scan finds only when it scans
+Not done: sound. Nothing is played through a paired device yet: the audio server's side of Bluetooth is not
+there (the daemon finds nobody to hand an audio device to). The phone has no name of its own in Settings ("(null)"). A program that is not an application in the foreground is given what a scan finds only when it scans
 for services, as on an iPhone: `cb_test 60 band FEE0`.
 
 ## The hardware
@@ -26,8 +25,8 @@ for services, as on an iPhone: `cb_test 60 band FEE0`.
 | | |
 |---|---|
 | Chip | a WCN3991 (the device tree calls it `qcom,wcn3990`): the Bluetooth half of the radio chip whose Wi-Fi half is `docs/garnet/WIFI.md` |
-| UART | serial engine 5 of QUP 1 at 0x00a94000; pins 14 (CTS), 15 (RTS), 16 (TX), 17 (RX) |
-| Clock | GCC: the engine's root at 0x28618, 7.3728 MHz from the 300 MHz PLL output through M/N 384/15625 |
+| UART | serial engine 5 of QUP 1 at 0x00a94000; pins 14 (CTS), 15 (RTS), 16 (TX), 17 (RX); 3.2 Mbaud |
+| Clock | GCC: the engine's root at 0x28618, from the 300 MHz PLL output: 7.3728 MHz (M/N 384/15625) for the slow speeds, 102.4 MHz (128/375) for 3.2 Mbaud |
 | Supplies | `ldob22` 1.8 V, `ldoe1` 1.8 V, `ldob14` 1.304 V, `ldoe10` 3.312 V (the last three are the Wi-Fi half's too) |
 | Reset line | none: the chip is switched off and on with a byte on the UART (0xc0 at 2400 baud, 0xfc at 115200) |
 
@@ -40,13 +39,13 @@ polled (`qcom_geni_serial.c` has the registers):
 2. the two power bytes; then the chip's version (vendor command 0xfc00 with 0x19). This phone's answers with
    chip 0x40010320, ROM 0x0302: files `crbtfw32.tlv` and `crnv32.bin`;
 3. the patch, 243 bytes to a command (0xfc00 with 0x1e), of which only the last is answered; then the settings,
-   each piece answered. In the settings the UART's speed is set to 115200 (entry 17), which the chip takes up at
-   the reset that follows; the file's own value is 3.2 Mbaud;
+   each piece answered. Before the patch both sides go to 3.2 Mbaud (vendor command 0xfc48, then the engine's
+   clock), and the settings say the same speed (entry 17), which the chip keeps at the reset that follows;
 4. HCI reset. From here on the chip uses its sleep protocol on the UART: it says 0xfd before it sends after a
    pause and waits for 0xfc. The driver answers, takes those bytes out, and hands whole packets on.
 
-Half a minute passes between the kernel's start and the controller being there: twelve seconds of waiting
-(`bt_delay`) and thirteen for the patch at 115200 baud.
+The controller is there a second after the driver begins, which is twelve seconds after the kernel's start
+(`bt_delay`).
 
 ## Darwin's Bluetooth daemon
 
@@ -82,4 +81,5 @@ phone's `/vendor/bt_firmware/image` (as root) into `fw-bt/`, and `userland/build
 | `bt=4` | and a scan counted in the kernel first, for `bt_scan` seconds (5) |
 | `bt_delay=<s>` | when this begins after the kernel's start (12) |
 | `bt_sample=<n>` | the UART's samples per bit, 16 or 32 (16; the other is tried when the chip does not answer) |
+| `bt_slow=1` | the UART stays at 115200 baud |
 | `bt_log=1` | the Bluetooth daemon's quieter messages on the console too (a great many) |
