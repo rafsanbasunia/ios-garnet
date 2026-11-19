@@ -148,21 +148,20 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `modem_again` | K | `hakios.mpss.c` | `CONFIG_MODEM_AGAIN` |  |
 | `modem_apn` | K | `hakios.mpss.c` | `CONFIG_MODEM_APN` |  |
 | `modem_buffer` | K | `hakios.mpss.c` | `CONFIG_MODEM_BUFFER` |  |
-| `modem_data` | K | `hakios.mpss.c` | `CONFIG_MODEM_DATA` |  |
 | `modem_data_nobind` | K | `hakios.mpss.c` | `CONFIG_MODEM_DATA_NOBIND` |  |
 | `modem_data_off` | K | `hakios.mpss.c` | `CONFIG_MODEM_DATA_OFF` |  |
 | `modem_data_wait` | K | `hakios.mpss.c` | `CONFIG_MODEM_DATA_WAIT` |  |
 | `modem_dpm_off` | K | `hakios.mpss.c` | `CONFIG_MODEM_DPM_OFF` |  |
 | `modem_ipa` | K | `hakios.mpss.c` | `CONFIG_MODEM_IPA` |  |
 | `modem_ipa_bus_off` | K | `hakios.mpss.c` | `CONFIG_MODEM_IPA_BUS_OFF` |  |
-| `modem_ipa_data_off` | K | `hakios.ipa.c` | `CONFIG_MODEM_IPA_DATA_OFF` |  |
+| `modem_ipa_data_off` | K | `hakios.ipa.c`, `hakios.mpss.c` | `CONFIG_MODEM_IPA_DATA_OFF` |  |
 | `modem_ipa_data_trace` | K | `hakios.cell.c`, `hakios.ipa.c` | `CONFIG_MODEM_IPA_DATA_TRACE` |  |
 | `modem_ipa_fw` | K | `hakios.mpss.c` | `CONFIG_MODEM_IPA_FW` |  |
 | `modem_ipa_fw_at` | K | `hakios.mpss.c` | `CONFIG_MODEM_IPA_FW_AT` |  |
 | `modem_ipa_gsi_enable` | K | `hakios.mpss.c` | `CONFIG_MODEM_IPA_GSI_ENABLE` |  |
+| `modem_ipa_init_android` | K | `hakios.mpss.c` | `CONFIG_MODEM_IPA_INIT_ANDROID` |  |
 | `modem_ipa_item` | K | `hakios.mpss.c` | `CONFIG_MODEM_IPA_ITEM` |  |
 | `modem_ipa_no_probe` | K | `hakios.mpss.c` | `CONFIG_MODEM_IPA_NO_PROBE` |  |
-| `modem_ipa_qmi` | K | `hakios.mpss.c` | `CONFIG_MODEM_IPA_QMI` |  |
 | `modem_ipa_quiet` | K | `hakios.mpss.c` | `CONFIG_MODEM_IPA_QUIET` |  |
 | `modem_ipa_raw` | K | `hakios.mpss.c` | `CONFIG_MODEM_IPA_RAW` |  |
 | `modem_ipa_routes` | K | `hakios.mpss.c` | `CONFIG_MODEM_IPA_ROUTES` |  |
@@ -173,6 +172,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `modem_nas_wait` | K | `hakios.mpss.c` | `CONFIG_MODEM_NAS_WAIT` |  |
 | `modem_nav` | K | `hakios.mpss.c` | `CONFIG_MODEM_NAV` |  |
 | `modem_new` | K | `hakios.mpss.c` | `CONFIG_MODEM_NEW` |  |
+| `modem_no_ipa_qmi` | K | `hakios.mpss.c` | `CONFIG_MODEM_NO_IPA_QMI` |  |
 | `modem_no_tftp` | K | `hakios.mpss.c` | `CONFIG_MODEM_NO_TFTP` |  |
 | `modem_online` | K | `hakios.mpss.c` | `CONFIG_MODEM_ONLINE` |  |
 | `modem_pause` | K | `hakios.mpss.c` | `CONFIG_MODEM_PAUSE` |  |

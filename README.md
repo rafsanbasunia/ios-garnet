@@ -24,7 +24,7 @@ Status: November 2026.
 | Buttons | Power, volume up, volume down (volume display, Control Center's volume slider) |
 | Sound | Both speakers, through the audio DSP (AudioReach) and the two AW88261 amplifiers: system sounds, music, video |
 | Wi-Fi | 2.4 and 5 GHz (up to 80 MHz), WPA2; scan and join from Settings, DHCP, DNS, Safari |
-| Cellular | With `modem=1 ufs=2`: the modem online, the SIM cards found, registered on LTE, signal bars in the status bar |
+| Cellular | With `modem=1 ufs=2`: registered on LTE, signal bars in the status bar, mobile data, USSD; calls made and answered, without sound |
 | Battery | Level reading |
 | Copy and paste | the pasteboard daemon (pasted); drag and drop, the share sheet |
 | Files | the Files app with "On My iPhone" (kept in memory, like all of `/private/var`) |
@@ -32,8 +32,9 @@ Status: November 2026.
 ## What does not work (yet)
 
 - Bluetooth, camera, sensors, GPS.
-- Cellular: no mobile data, no SMS, no calls; off unless asked for, and the phone has to be restarted after a
-  session with it ([docs/garnet/CELLULAR.md](docs/garnet/CELLULAR.md)).
+- Cellular: calls have no sound; no SMS; calls and USSD are driven by a command, not by the Phone application;
+  off unless asked for, and the phone has to be restarted after a session with it
+  ([docs/garnet/CELLULAR.md](docs/garnet/CELLULAR.md)).
 - Audio: no microphones, no headphones, no Bluetooth audio, no calls; the earpiece is not a route of its own.
 - Wi-Fi: no WPA3; channels 12-14 off; on 5 GHz a network shows only once its access point has been heard.
 - Graphics: Control Center at about 35-40 fps; 120 Hz not reached.

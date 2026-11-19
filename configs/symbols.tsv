@@ -188,21 +188,20 @@ MIC_SECS	arg	mic_secs	Audio and battery	k	hakios.mic.c
 MIC_TAP	arg	mic_tap	Audio and battery	k	hakios.mic.c	
 MIC_TEST	arg	mic_test	Audio and battery	k	hakios.mic.c	
 MODEM_APN	arg	modem_apn	Cellular	k	hakios.mpss.c	a session to that APN instead of the default profile
-MODEM_DATA	arg	modem_data	Cellular	k	hakios.mpss.c	
 MODEM_DATA_NOBIND	arg	modem_data_nobind	Cellular	k	hakios.mpss.c	
 MODEM_DATA_OFF	arg	modem_data_off	Cellular	k	hakios.mpss.c	
 MODEM_DATA_WAIT	arg	modem_data_wait	Cellular	k	hakios.mpss.c	
 MODEM_DPM_OFF	arg	modem_dpm_off	Cellular	k	hakios.mpss.c	
 MODEM_IPA	arg	modem_ipa	Cellular	k	hakios.mpss.c	
 MODEM_IPA_BUS_OFF	arg	modem_ipa_bus_off	Cellular	k	hakios.mpss.c	
-MODEM_IPA_DATA_OFF	arg	modem_ipa_data_off	Cellular	k	hakios.ipa.c	none of this. modem_ipa_data_trace=1: a line per packet.
+MODEM_IPA_DATA_OFF	arg	modem_ipa_data_off	Cellular	k	hakios.ipa.c,hakios.mpss.c	none of this. modem_ipa_data_trace=1: a line per packet.
 MODEM_IPA_DATA_TRACE	arg	modem_ipa_data_trace	Cellular	k	hakios.cell.c,hakios.ipa.c	
 MODEM_IPA_FW	arg	modem_ipa_fw	Cellular	k	hakios.mpss.c	
 MODEM_IPA_FW_AT	arg	modem_ipa_fw_at	Cellular	k	hakios.mpss.c	
 MODEM_IPA_GSI_ENABLE	arg	modem_ipa_gsi_enable	Cellular	k	hakios.mpss.c	
+MODEM_IPA_INIT_ANDROID	arg	modem_ipa_init_android	Cellular	k	hakios.mpss.c	
 MODEM_IPA_ITEM	arg	modem_ipa_item	Cellular	k	hakios.mpss.c	
 MODEM_IPA_NO_PROBE	arg	modem_ipa_no_probe	Cellular	k	hakios.mpss.c	
-MODEM_IPA_QMI	arg	modem_ipa_qmi	Cellular	k	hakios.mpss.c	
 MODEM_IPA_QUIET	arg	modem_ipa_quiet	Cellular	k	hakios.mpss.c	
 MODEM_IPA_RAW	arg	modem_ipa_raw	Cellular	k	hakios.mpss.c	
 MODEM_IPA_ROUTES	arg	modem_ipa_routes	Cellular	k	hakios.mpss.c	
@@ -213,6 +212,7 @@ MODEM_LISTEN	arg	modem_listen	Cellular	k	hakios.mpss.c
 MODEM_NAS_WAIT	arg	modem_nas_wait	Cellular	k	hakios.mpss.c	
 MODEM_NAV	arg	modem_nav	Cellular	k	hakios.mpss.c	
 MODEM_NEW	arg	modem_new	Cellular	k	hakios.mpss.c	
+MODEM_NO_IPA_QMI	arg	modem_no_ipa_qmi	Cellular	k	hakios.mpss.c	
 MODEM_NO_TFTP	arg	modem_no_tftp	Cellular	k	hakios.mpss.c	
 MODEM_ONLINE	arg	modem_online	Cellular	k	hakios.mpss.c	
 MODEM_PAUSE	arg	modem_pause	Cellular	k	hakios.mpss.c	

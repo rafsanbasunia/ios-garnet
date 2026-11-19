@@ -38,8 +38,13 @@
  *   - the image's header has to be handed to TrustZone from below 4 GB
  *   - its rails are cx.lvl and mss.lvl (the device tree calls the second one "mx"), and xo.lvl is asked for too
  *   - the doorbells are at 0xed18000, the RPMh controller at 0x17a20000
- *   - its IPA is version 5.2, which hakios.ipa.c (4.11) does not drive: the IPA's firmware is not loaded, its
- *     driver in the modem is told nothing, and no data session is started unless asked (modem_data=1)
+ *   - its IPA is version 5.2 (GSI 3.0), which is what hakios.ipa.c and the IPA's parts of this file are written for:
+ *     its firmware is loaded and this processor's side of it set up before the modem starts, the modem's IPA driver
+ *     is told the 5.2 layout, and a data session is started once the modem is registered (modem_data_off=1: none;
+ *     modem_ipa_fw=0: the IPA left alone)
+ *   - the SMMU context the IPA's requests go through shows it the memory above 32 GB too, where this phone's
+ *     kernel has most of its own
+ *   - calls and USSD are hakios.voice.c's: a client of the modem's voice service beside the one for the network
  *   - the first request to shut a stopped modem down is refused by TrustZone and the second taken
  *   - after a session with the modem the phone has to be restarted before the system is started again: a second
  *     kernel in the same session of the loader hangs within seconds (why is not known)
@@ -92,6 +97,7 @@
 #include <sys/hakios.input.h>
 #include <sys/hakios.ipa.h>
 #include <sys/hakios.nas.h>
+#include <sys/hakios.voice.h>
 #include <sys/hakios.qrtr.h>
 #include <sys/sysctl.h>
 
@@ -119,6 +125,9 @@ static bool ipa_firmware_load(void);
 static void ipa_firmware_stop(void);
 static bool ipa_loaded;                 /* the IPA's firmware runs (ipa_firmware_load()) */
 static uint32_t ipa_mem_offset;          /* where the IPA's local memory begins, as its register says */
+static bool ipa_data_failed;            /* the IPA runs but its memory or this processor's data path could not be set up: the
+                                         * modem's IPA driver is told nothing and no data session is started */
+static uint32_t ipa_item_phys;          /* where the IPA's item (497) is in the shared memory, as a physical address; 0: not known */
 static bool rmtfs_share(bool in);
 static bool rmtfs_start(void);
 static void rmtfs_stop(void);
@@ -1776,11 +1785,17 @@ step_our_item(void)
 	/*
 	 * A second entry, "ipa" (dt: qcom,smp2p-ipa-1-out of qcom,smp2p-modem): the IPA driver's answer to the
 	 * modem's question whether the IPA's clock is on, as Linux's ipa_smp2p.c gives it: bit 0 "the answer
-	 * is valid", bit 1 "the clock is on". The modem, told so, keeps away from the IPA (there is no IPA
-	 * driver here). Off unless modem_ipa=1 (valid, off) or 3 (on): with the entry the run of 23 October hung.
+	 * is valid", bit 1 "the clock is on". It says 3, valid and on, since the IPA is set up and clocked before
+	 * the modem starts (ipa_firmware_load()); modem_ipa=1 says valid and off, modem_ipa=0 leaves the entry out. When
+	 * the IPA's firmware is not loaded (modem_ipa_fw=0) there is no entry unless one is asked for.
 	 */
 	{
-		uint32_t ipa = 0;                       /* (the modem's IPA driver waits for this entry to exist: see the IPA's handshake) */
+		uint32_t ipa = 3, ipa_fw = 1;           /* (the modem's IPA driver waits for this entry to exist: see the IPA's handshake) */
+
+		PE_parse_boot_argn("modem_ipa_fw", &ipa_fw, sizeof(ipa_fw));
+		if (ipa_fw == 0) {
+			ipa = 0;
+		}
 
 		PE_parse_boot_argn("modem_ipa", &ipa, sizeof(ipa));
 		if (ipa != 0) {
@@ -1807,25 +1822,34 @@ step_our_item(void)
 	}
 	show_words("our item reads back", &ours);
 	/*
-	 * The IPA's item: SMEM_IPA_FILTER_TABLE (497), 0x9000 bytes (dt: qcom,ipa-q6-smem-size of ipa_smmu_ap), which
+	 * The IPA's item: SMEM_IPA_FILTER_TABLE (497), 0xb000 bytes on this phone (dt: qcom,ipa-q6-smem-size of
+	 * ipa_smmu_ap; Linux: smem_size of data/ipa_data-v5.2.c; the first phone's IPA 4.11 had 0x9000), which
 	 * Android's IPA driver allocates in this partition at its probe (techpack/dataipa, ipa_smmu_ap_cb_probe():
 	 * qcom_smem_alloc(SMEM_MODEM, SMEM_IPA_FILTER_TABLE, size)) and maps into the IPA's SMMU context as it is:
 	 * the modem puts its filter tables there for the IPA to read. The modem looks for it when its IPA driver
 	 * initializes; before the IPA ran here (22 October) an item of 0x2000 made the modem give up before any
 	 * service, since it then went on to the unclocked IPA. Now that the IPA runs, made by default, zeroed
 	 * (modem_ipa_item=0: not; our SMMU context maps all of DDR, so the item needs no mapping of its own).
+	 * Where it is is kept: Android tells the modem the address of its first 2 KB (modem_ipa_init_android=1).
 	 */
+#define IPA_ITEM_SIZE           0xb000u
 	{
-		uint32_t ipa_item = 497, ipa_size = 0;
+		uint32_t ipa_item = 497, ipa_size = 0, at;
 
 		PE_parse_boot_argn("modem_ipa_item", &ipa_item, sizeof(ipa_item));
+		ipa_item_phys = 0;
 		if (ipa_item != 0) {
-			if (smem_item(ipa_item, &ipa_size) != 0) {
-				printf("mpss: %u: the IPA's item %u is there already (%u bytes)\n", step, ipa_item, ipa_size);
-			} else if (our_item_make(partition, ipa_item, 0x9000)) {
-				tell("mpss: %u: THE IPA'S ITEM %u MADE, 0x9000 bytes, zeroed (the modem's filter tables go there)\n", step, ipa_item);
+			if ((at = smem_item(ipa_item, &ipa_size)) != 0) {
+				printf("mpss: %u: the IPA's item %u is there already (%#x bytes at %#x%s)\n", step, ipa_item, ipa_size, smem_phys + at,
+				    ipa_size == IPA_ITEM_SIZE ? "" : ": NOT THE SIZE THIS IPA'S DRIVERS MAKE IT");
+				ipa_item_phys = smem_phys + at;
+			} else if (our_item_make(partition, ipa_item, IPA_ITEM_SIZE)) {
+				at = smem_item(ipa_item, &ipa_size);
+				ipa_item_phys = at != 0 ? smem_phys + at : 0;
+				tell("mpss: %u: THE IPA'S ITEM %u MADE, %#x bytes at %#x, zeroed (the modem's filter tables go there)\n", step, ipa_item,
+				    IPA_ITEM_SIZE, ipa_item_phys);
 			} else {
-				printf("mpss: %u: the IPA's item %u could not be made\n", step, ipa_item);
+				printf("mpss: %u: THE IPA'S ITEM %u COULD NOT BE MADE\n", step, ipa_item);
 			}
 		}
 	}
@@ -1863,139 +1887,246 @@ static uint32_t ipa_fw_memory = 0x89e10000u, ipa_fw_size = 0xa000u;
  * memory is), the microcontroller's area at the start of that memory (Linux's ipa_uc.c: command,
  * response -- 1 once it has booted --, event, error, hardware state, interface version) and GSI's
  * status (bit 0: the GSI firmware is enabled) and error log, for our execution environment.
+ *
+ * The three blocks are this phone's, IPA 5.2 with GSI 3.0 (dt: qcom,ipa@3e00000, reg "ipa-base"
+ * 0x3e00000 and "gsi-base" 0x3e04000, qcom,ipa-cfg-offset 0x140000): the IPA's registers at
+ * 0x3f40000 (mapped as far as its interrupt registers at 0xc008..0xc010), its local memory 0x10000
+ * after them (Linux's dt for the SoCs with IPA 5.x: "ipa-reg" 0x3f40000, "ipa-shared" 0x3f50000 of
+ * 0x5000 bytes, of which the 5.2 layout uses 0x3fe8), and our execution environment's GSI
+ * registers, which GSI 3.0 has 0x25000 into the GSI (Linux: reg/gsi_reg-v5.0.c). The offsets
+ * below are IPA 5.0's (Linux: reg/ipa_reg-v5.0.c, which it uses for 5.2 too).
  */
-static struct block ipa_regs = { "ipa", 0x01e40000, 0x1000 };
-static struct block ipa_sram = { "ipa-shared", 0x01e50000, 0x4000 };  /* the local memory: 0x3000 bytes (SHARED_MEM_SIZE) */
-static struct block gsi_ee0 = { "gsi-ee0", 0x01e16000, 0x1000 };
+static struct block ipa_regs = { "ipa", 0x03f40000, 0xd000 };
+static struct block ipa_sram = { "ipa-shared", 0x03f50000, 0x5000 };  /* the local memory: 0x3fe8 bytes used (data/ipa_data-v5.2.c) */
+static struct block gsi_ee0 = { "gsi-ee0", 0x03e29000, 0x1000 };
+#define IPA_FLAVOR_0            0x000           /* pipes [7:0], consumer pipes [15:8], producer pipes [23:16], the lowest producer [31:24] */
+#define IPA_COMP_HW_VERSION     0x024           /* (these two from Android's ipahal_reg.c) */
+#define IPA_VERSION             0x028
+#define IPA_SHARED_MEM_SIZE     0x040           /* the local memory's size [15:0] and offset [31:16], in 8-byte units */
+#define GSI_EE_STATUS           0x000           /* of the gsi_ee0 block: GSI_STATUS, bit 0 enabled */
+#define GSI_EE_HW_PARAM_2       0x040           /* channels per EE [7:0] */
+#define GSI_EE_SW_VERSION       0x044
+#define GSI_EE_HW_PARAM_4       0x050           /* event rings per EE [7:0] */
+#define GSI_EE_ERROR_LOG        0x240
 
 static void
 ipa_status(const char *when)
 {
-	uint32_t shared, uc0, uc3, uc5, uc7, uc8, gsi, error;
+	uint32_t shared, offset, uc0 = 0, uc3 = 0, uc5 = 0, uc7 = 0, uc8 = 0, uc9 = 0, gsi, error, flavor;
 
 	need(&ipa_regs);
 	need(&ipa_sram);
 	need(&gsi_ee0);
-	shared = rd(ipa_regs.base + 0x54);
-	uc0 = rd(ipa_sram.base + 0x00);         /* command (byte 0) */
-	uc3 = rd(ipa_sram.base + 0x0c);         /* response (byte 0) */
-	uc5 = rd(ipa_sram.base + 0x14);         /* event (byte 0) */
-	uc7 = rd(ipa_sram.base + 0x1c);         /* first error address */
-	uc8 = rd(ipa_sram.base + 0x20);         /* hw_state (byte 0), warning counter (byte 1) */
-	gsi = rd(gsi_ee0.base + 0x000);         /* GSI_STATUS */
-	error = rd(gsi_ee0.base + 0x200);       /* ERROR_LOG */
-	tell("mpss: ipa: %s: shared memory %#x (offset %u, %u bytes); uC command %#x response %#x (1: booted) event %#x error address %#x "
-	    "hw_state %u warnings %u, interface %#x; GSI status %#x (%s), error log %#x\n", when, shared, 8 * (shared >> 16),
-	    8 * (shared & 0xffff), uc0 & 0xff, uc3 & 0xff, uc5 & 0xff, uc7, uc8 & 0xff, (uc8 >> 8) & 0xff, rd(ipa_sram.base + 0x24) & 0xffff,
-	    gsi, gsi & 1 ? "ENABLED" : "NOT ENABLED", error);
-	ipa_mem_offset = 8 * (shared >> 16);
+	shared = rd(ipa_regs.base + IPA_SHARED_MEM_SIZE);
+	flavor = rd(ipa_regs.base + IPA_FLAVOR_0);
+	offset = 8 * (shared >> 16);
+	/* the microcontroller's area is the first region of the local memory (UC_SHARED, offset 0) */
+	if (offset + 0x28 <= ipa_sram.size) {
+		uc0 = rd(ipa_sram.base + offset + 0x00);        /* command (byte 0) */
+		uc3 = rd(ipa_sram.base + offset + 0x0c);        /* response (byte 0) */
+		uc5 = rd(ipa_sram.base + offset + 0x14);        /* event (byte 0) */
+		uc7 = rd(ipa_sram.base + offset + 0x1c);        /* first error address */
+		uc8 = rd(ipa_sram.base + offset + 0x20);        /* hw_state (byte 0), warning counter (byte 1) */
+		uc9 = rd(ipa_sram.base + offset + 0x24);        /* interface version (low half) */
+	}
+	gsi = rd(gsi_ee0.base + GSI_EE_STATUS);
+	error = rd(gsi_ee0.base + GSI_EE_ERROR_LOG);
+	tell("mpss: ipa: %s: IPA version %#x (component %#x), FLAVOR_0 %#x (%u pipes, %u consumers, %u producers from %u); shared memory %#x "
+	    "(offset %#x, %#x bytes%s)\n", when, rd(ipa_regs.base + IPA_VERSION), rd(ipa_regs.base + IPA_COMP_HW_VERSION), flavor,
+	    flavor & 0xff, (flavor >> 8) & 0xff, (flavor >> 16) & 0xff, flavor >> 24, shared, offset, 8 * (shared & 0xffff),
+	    offset + 0x28 <= ipa_sram.size ? "" : ": THE OFFSET IS BEYOND WHAT IS MAPPED OF THE LOCAL MEMORY");
+	tell("mpss: ipa: %s: uC command %#x response %#x (1: booted) event %#x error address %#x hw_state %u warnings %u, interface %#x\n",
+	    when, uc0 & 0xff, uc3 & 0xff, uc5 & 0xff, uc7, uc8 & 0xff, (uc8 >> 8) & 0xff, uc9 & 0xffff);
+	tell("mpss: ipa: %s: GSI status %#x (%s), software version %#x, HW_PARAM_2 %#x (%u channels per EE), HW_PARAM_4 %#x (%u event "
+	    "rings per EE), error log %#x\n", when, gsi, gsi & 1 ? "ENABLED" : "NOT ENABLED", rd(gsi_ee0.base + GSI_EE_SW_VERSION),
+	    rd(gsi_ee0.base + GSI_EE_HW_PARAM_2), rd(gsi_ee0.base + GSI_EE_HW_PARAM_2) & 0xff, rd(gsi_ee0.base + GSI_EE_HW_PARAM_4),
+	    rd(gsi_ee0.base + GSI_EE_HW_PARAM_4) & 0xff, error);
+	ipa_mem_offset = offset;
 }
 
 
 /*
  * The IPA's local memory as Linux's ipa_mem_config() and ipa_mem_setup() leave it before the modem
- * is told of it: zeroed, with "canaries" (0xdeadbeef) in the words before the regions that have
- * them (IPA v4.11: ipa_data-v4.11.c), and the register that says where the modem's processing
- * contexts begin. The modem reads this memory for the microcontroller's state and its own tables;
- * what it finds there after power-on is whatever was left.
+ * is told of it: zeroed, with "canaries" (0xdeadbeef) in the two words before each region that
+ * has them (IPA 5.2: data/ipa_data-v5.2.c, ipa_mem_local_data; Android's _ipa_init_sram_v3()
+ * writes the same thirteen pairs for IPA 5.0 and later), and the register that says where the
+ * modem's processing contexts begin. The modem reads this memory for the microcontroller's state
+ * and its own tables; what it finds there after power-on is whatever was left. False, said in
+ * capitals: the register says the memory is not where or as large as the layout needs, or the
+ * memory does not keep what is written to it; then nothing more of the IPA is set up.
  */
-static void
+#define IPA_MEM_END             0x3fe8          /* the end of the last region (PDN_CONFIG: 0x3ee8, 0x100 bytes) */
+#define IPA_MEM_MODEM_PROC_CTX  0x0b40          /* the modem's processing contexts (0xb20 bytes) */
+#define IPA_LOCAL_PKT_PROC_CNTXT 0x478          /* IPA_BASE_ADDR [17:0] */
+
+static bool
 ipa_memory_init(void)
 {
-	static const struct {
-		uint16_t offset, canaries;
-	} regions[] = {
-		/* Android's _ipa_init_sram_v3() for IPA 4.11 (its ipa_4_11_mem_part): two before each table and the modem's
-		 * headers and processing contexts, one 16 bytes before the NAT table (0x17a0) and the modem's quota statistics
-		 * (0x1d00), two before the modem's region (0x27d8), one at the end */
-		{ 0x0288, 2 }, { 0x0308, 2 }, { 0x0388, 2 }, { 0x0408, 2 }, { 0x0488, 2 }, { 0x0508, 2 }, { 0x0588, 2 }, { 0x0608, 2 },
-		{ 0x0688, 2 }, { 0x0ad0, 2 }, { 0x1794, 1 }, { 0x1cf4, 1 }, { 0x27d8, 2 }, { 0x3000, 1 },
+	/* the regions with canaries (two each): the eight tables, the modem's headers, its processing contexts, its
+	 * quota statistics, its own region, the PDN configuration */
+	static const uint16_t regions[] = {
+		0x0288, 0x0308, 0x0388, 0x0408, 0x0488, 0x0528, 0x05c8, 0x0668, 0x0708, 0x0b40, 0x1868, 0x2898, 0x3ee8,
 	};
-	const uint32_t size = 0x3000;
+	uint32_t shared, size, limit, wrong = 0;
 
 	need(&ipa_sram);
 	need(&ipa_regs);
+	shared = rd(ipa_regs.base + IPA_SHARED_MEM_SIZE);
+	ipa_mem_offset = 8 * (shared >> 16);
+	size = 8 * (shared & 0xffff);
+	/* (Linux's ipa_mem_config(): the smaller of what the register says and what there is; every region must end within it) */
+	limit = ipa_mem_offset + size < ipa_sram.size ? size : ipa_sram.size;
+	if (IPA_MEM_END > limit || ipa_mem_offset + IPA_MEM_END > ipa_sram.size) {
+		tell("mpss: ipa: THE IPA'S LOCAL MEMORY IS NOT WHAT THE 5.2 LAYOUT NEEDS: SHARED_MEM_SIZE %#x says %#x bytes at offset %#x, the "
+		    "layout ends at %#x, %#x bytes are mapped: nothing is written\n", shared, size, ipa_mem_offset, IPA_MEM_END, ipa_sram.size);
+		return false;
+	}
 	/* from 0x288: the microcontroller's own area (its shared words at 0, its info at 0x80) is left alone, as Linux leaves it */
-	for (uint32_t at = 0x288; at < size; at += 4) {
+	for (uint32_t at = 0x288; at < IPA_MEM_END; at += 4) {
 		wr(ipa_sram.base + ipa_mem_offset + at, 0);
 	}
 	for (unsigned r = 0; r < sizeof(regions) / sizeof(regions[0]); r++) {
-		for (unsigned c = 1; c <= regions[r].canaries; c++) {
-			wr(ipa_sram.base + ipa_mem_offset + regions[r].offset - 4 * c, 0xdeadbeef);
-		}
+		wr(ipa_sram.base + ipa_mem_offset + regions[r] - 4, 0xdeadbeef);
+		wr(ipa_sram.base + ipa_mem_offset + regions[r] - 8, 0xdeadbeef);
 	}
-	wr(ipa_regs.base + 0x1e8, ipa_mem_offset + 0x0ad0);    /* LOCAL_PKT_PROC_CNTXT: the modem's processing contexts */
+	wr(ipa_regs.base + IPA_LOCAL_PKT_PROC_CNTXT, ipa_mem_offset + IPA_MEM_MODEM_PROC_CTX);
 	settle();
-	printf("mpss: ipa: its local memory zeroed (0x288..%#x at offset %#x), the canaries written, the processing contexts' base set\n",
-	    size, ipa_mem_offset);
+	for (unsigned r = 0; r < sizeof(regions) / sizeof(regions[0]); r++) {
+		wrong += rd(ipa_sram.base + ipa_mem_offset + regions[r] - 4) != 0xdeadbeef;
+		wrong += rd(ipa_sram.base + ipa_mem_offset + regions[r] - 8) != 0xdeadbeef;
+		wrong += rd(ipa_sram.base + ipa_mem_offset + regions[r]) != 0;
+	}
+	printf("mpss: ipa: its local memory zeroed (0x288..%#x at offset %#x; SHARED_MEM_SIZE %#x), 13 pairs of canaries written\n",
+	    IPA_MEM_END, ipa_mem_offset, shared);
+	printf("mpss: ipa: read back: before the first table %#x %#x, the table's first word %#x, before the last region %#x; "
+	    "LOCAL_PKT_PROC_CNTXT %#x (wanted %#x)\n", rd(ipa_sram.base + ipa_mem_offset + 0x280),
+	    rd(ipa_sram.base + ipa_mem_offset + 0x284), rd(ipa_sram.base + ipa_mem_offset + 0x288),
+	    rd(ipa_sram.base + ipa_mem_offset + 0x3ee4), rd(ipa_regs.base + IPA_LOCAL_PKT_PROC_CNTXT),
+	    ipa_mem_offset + IPA_MEM_MODEM_PROC_CTX);
+	if (wrong != 0) {
+		tell("mpss: ipa: THE IPA'S LOCAL MEMORY DOES NOT READ BACK AS WRITTEN (%u of 39 words differ): it is not at %#x, or cannot be "
+		    "written from here\n", wrong, ipa_sram.phys + ipa_mem_offset);
+		return false;
+	}
+	return true;
 }
 
 
 /*
- * What Android's IPA driver programs into the IPA after its firmware starts and before the modem
- * boots (techpack/dataipa, ipa3_post_init(): ipa3_init_hw(), ipa3_set_resorce_groups_min_max_limits(),
- * ipa3_cfg_route()), as read from its source for IPA 4.11 and from the live registers of the phone's
- * Android (debugfs gen_reg): the QSB masters' outstanding reads and writes, the Qtime timers, the
- * GSI's in-order bits of COMP_CFG, the idle indication for clock division, the resource groups'
- * limits (without them nothing can be processed: the modem's own commands to the IPA would never
- * complete, and its answer to INIT_DRIVER never come), and the default route. Nothing of the
- * application processor's own pipes: there is no data path on this side yet.
+ * What Linux's IPA driver programs into the IPA after its firmware starts and before the modem
+ * boots, for IPA 5.2 (ipa_main.c, ipa_config(): ipa_hardware_config(), ipa_interrupt_config(),
+ * ipa_table_config(), ipa_resource_config(), with the numbers of data/ipa_data-v5.2.c; Android's
+ * ipa3_post_init() has the same QSB and resource numbers for IPA_5_2): the GSI's in-order bits of
+ * COMP_CFG, the QSB master's outstanding reads and writes, the Qtime timers, the idle indication
+ * for clock division, the IPA's own interrupts off, the filter and route caches' hash masks
+ * zeroed, and the resource groups' limits (without them nothing can be processed: the modem's own
+ * commands to the IPA would never complete, and its answer to INIT_DRIVER never come). The
+ * default route is written by hakios.ipa.c, once the endpoint it points at receives. Everything
+ * is read back into the log.
  */
-#define IPA_COMP_CFG            0x3c
-#define IPA_ROUTE               0x48
-#define IPA_QSB_MAX_WRITES      0x74
-#define IPA_QSB_MAX_READS       0x78
-#define IPA_IDLE_INDICATION_CFG 0x240
-#define IPA_QTIME_TIMESTAMP_CFG 0x24c
-#define IPA_TIMERS_XO_CLK_DIV_CFG 0x250
-#define IPA_TIMERS_PULSE_GRAN_CFG 0x254
-#define IPA_SRC_RSRC_GRP_01(n)  (0x400 + 0x20 * (n))    /* groups 0 and 1: x_min [5:0] x_max [13:8] y_min [21:16] y_max [29:24] */
-#define IPA_SRC_RSRC_GRP_23(n)  (0x404 + 0x20 * (n))
-#define IPA_DST_RSRC_GRP_01(n)  (0x500 + 0x20 * (n))
-#define IPA_DST_RSRC_GRP_23(n)  (0x504 + 0x20 * (n))
+#define IPA_COMP_CFG            0x02c
+#define IPA_ROUTE               0x038
+#define IPA_QSB_MAX_WRITES      0x054
+#define IPA_QSB_MAX_READS       0x058
+#define IPA_IDLE_INDICATION_CFG 0x4a8
+#define IPA_QTIME_TIMESTAMP_CFG 0x4ac
+#define IPA_TIMERS_XO_CLK_DIV_CFG 0x4b0
+#define IPA_TIMERS_PULSE_GRAN_CFG 0x4b4
+#define IPA_SRC_RSRC_GRP_01(n)  (0x500 + 0x20 * (n))    /* groups 0 and 1: x_min [5:0] x_max [13:8] y_min [21:16] y_max [29:24] */
+#define IPA_SRC_RSRC_GRP_23(n)  (0x504 + 0x20 * (n))
+#define IPA_DST_RSRC_GRP_01(n)  (0x600 + 0x20 * (n))
+#define IPA_DST_RSRC_GRP_23(n)  (0x604 + 0x20 * (n))
+#define IPA_ENDP_FILTER_CACHE_CFG(ep) (0x105c + 0x80 * (ep))
+#define IPA_ENDP_ROUTER_CACHE_CFG(route) (0x1070 + 0x80 * (route))
+#define IPA_IRQ_STTS            0xc008
+#define IPA_IRQ_EN              0xc00c
 #define RSRC(xmin, xmax, ymin, ymax) ((uint32_t)(xmin) | (uint32_t)(xmax) << 8 | (uint32_t)(ymin) << 16 | (uint32_t)(ymax) << 24)
 
 static void
 ipa_hardware_init(void)
 {
-	static const uint8_t source[5] = { 6, 8, 18, 2, 15 };  /* packet contexts, descriptor lists, descriptor buffers, HPS DMARs, ACK entries: group 0 (UL/DL) */
-	uint32_t value;
+	/*
+	 * The resource groups of IPA 5.2: sources UL (0), DL (1), URLLC (2); destinations UL (0), DL (1), one unused
+	 * (2), DRB_IP (3). Per type the registers for groups 0 and 1, then for 2 and 3 (a source has no group 3).
+	 */
+	static const struct {
+		uint32_t groups_01, groups_23;
+	} source[5] = {
+		{ RSRC(1, 7, 1, 7), RSRC(0, 5, 0, 0) },         /* packet contexts */
+		{ RSRC(8, 8, 8, 8), RSRC(8, 8, 0, 0) },         /* descriptor lists */
+		{ RSRC(10, 10, 12, 12), RSRC(12, 12, 0, 0) },   /* descriptor buffers */
+		{ RSRC(0, 63, 0, 63), RSRC(0, 63, 0, 0) },      /* HPS DMARs */
+		{ RSRC(15, 15, 15, 15), RSRC(12, 12, 0, 0) },   /* ACK entries */
+	}, destination[3] = {
+		{ RSRC(3, 3, 3, 3), RSRC(0, 0, 23, 23) },       /* data sectors */
+		{ RSRC(1, 2, 1, 2), 0 },                        /* DPS DMARs */
+		{ RSRC(1, 63, 1, 63), 0 },                      /* ULSO segments */
+	};
+	static const uint8_t filtering[3] = { 2, 7, 10 };      /* the endpoints that filter: our modem transmit endpoint, two of the modem's */
+	uint32_t value, wrong = 0;
 
 	need(&ipa_regs);
-	/* QSB: 12 outstanding writes, 13 reads of 120 beats on the DDR master (ipa3_qmb_outstanding[IPA_4_11]) */
-	value = rd(ipa_regs.base + IPA_QSB_MAX_WRITES);
-	wr(ipa_regs.base + IPA_QSB_MAX_WRITES, (value & ~0xfu) | 12);
-	value = rd(ipa_regs.base + IPA_QSB_MAX_READS);
-	wr(ipa_regs.base + IPA_QSB_MAX_READS, (value & ~0x00ff000fu) | 13 | 120u << 16);
-	/* Qtime: the divider off, the timestamps and pulse generators as Android leaves them, the divider 192 on */
-	wr(ipa_regs.base + IPA_TIMERS_XO_CLK_DIV_CFG, 0);
-	wr(ipa_regs.base + IPA_QTIME_TIMESTAMP_CFG, 0x180e8e);
-	wr(ipa_regs.base + IPA_TIMERS_PULSE_GRAN_CFG, 0x123);
-	wr(ipa_regs.base + IPA_TIMERS_XO_CLK_DIV_CFG, 0xbf);
-	wr(ipa_regs.base + IPA_TIMERS_XO_CLK_DIV_CFG, 0x800000bf);
 	/* COMP_CFG: GSI_MULTI_INORDER_RD_DIS and _WR_DIS */
 	value = rd(ipa_regs.base + IPA_COMP_CFG);
 	wr(ipa_regs.base + IPA_COMP_CFG, value | 1u << 7 | 1u << 8);
+	/* QSB: 13 outstanding writes, 13 reads of any number of beats, on the DDR master (the second master is not used) */
+	wr(ipa_regs.base + IPA_QSB_MAX_WRITES, 13);
+	wr(ipa_regs.base + IPA_QSB_MAX_READS, 13);
+	/* Qtime: the divider off; the timestamps (DPL and tag bit 14, NAT bit 24); the pulse generators 100 us, 1 ms, 10 ms,
+	 * 10 ms (the fourth is new in IPA 5.0); the divider 192 on */
+	wr(ipa_regs.base + IPA_TIMERS_XO_CLK_DIV_CFG, 0);
+	wr(ipa_regs.base + IPA_QTIME_TIMESTAMP_CFG, 0x180e8e);
+	wr(ipa_regs.base + IPA_TIMERS_PULSE_GRAN_CFG, 3u | 4u << 3 | 5u << 6 | 5u << 9);
+	wr(ipa_regs.base + IPA_TIMERS_XO_CLK_DIV_CFG, 0xbf);
+	wr(ipa_regs.base + IPA_TIMERS_XO_CLK_DIV_CFG, 0x800000bf);
 	/* dynamic clock division: enter idle after 256, no constant non-idle */
 	wr(ipa_regs.base + IPA_IDLE_INDICATION_CFG, 256);
-	/* the resource groups: the sources' five types for group 0 alone; the destinations' data sectors 3 for group 0
-	 * and 25 for group 2 (DRB_IP), DPS DMARs 2 for group 0 */
-	for (unsigned n = 0; n < 5; n++) {
-		wr(ipa_regs.base + IPA_SRC_RSRC_GRP_01(n), RSRC(source[n], source[n], 0, 0));
+	/* the IPA's own interrupts: none enabled (none is handled here) */
+	wr(ipa_regs.base + IPA_IRQ_EN, 0);
+	/* the caches (what IPA 5.0 calls the hashed tables): no field takes part in the hash, for each filtering endpoint
+	 * and each of the 19 routes */
+	for (unsigned n = 0; n < sizeof(filtering); n++) {
+		wr(ipa_regs.base + IPA_ENDP_FILTER_CACHE_CFG(filtering[n]), 0);
 	}
-	wr(ipa_regs.base + IPA_DST_RSRC_GRP_01(0), RSRC(3, 3, 0, 0));
-	wr(ipa_regs.base + IPA_DST_RSRC_GRP_23(0), RSRC(25, 25, 0, 0));
-	wr(ipa_regs.base + IPA_DST_RSRC_GRP_01(1), RSRC(2, 2, 0, 0));
-	wr(ipa_regs.base + IPA_DST_RSRC_GRP_23(1), 0);
-	/* the default route as Android's: not disabled, default pipe 9, header table 1, fragments to pipe 9, header retained */
-	wr(ipa_regs.base + IPA_ROUTE, 0x1120052);
+	for (unsigned route = 0; route < 19; route++) {
+		wr(ipa_regs.base + IPA_ENDP_ROUTER_CACHE_CFG(route), 0);
+	}
+	/* the resource groups' limits */
+	for (unsigned n = 0; n < 5; n++) {
+		wr(ipa_regs.base + IPA_SRC_RSRC_GRP_01(n), source[n].groups_01);
+		wr(ipa_regs.base + IPA_SRC_RSRC_GRP_23(n), source[n].groups_23);
+	}
+	for (unsigned n = 0; n < 3; n++) {
+		wr(ipa_regs.base + IPA_DST_RSRC_GRP_01(n), destination[n].groups_01);
+		wr(ipa_regs.base + IPA_DST_RSRC_GRP_23(n), destination[n].groups_23);
+	}
 	settle();
-	printf("mpss: ipa: the hardware set up as Android's driver does before the modem: QSB %#x %#x, COMP_CFG %#x, idle %#x, route %#x, "
-	    "source group 0 %u/%u/%u/%u/%u, destination sectors %#x %#x\n", rd(ipa_regs.base + IPA_QSB_MAX_WRITES),
-	    rd(ipa_regs.base + IPA_QSB_MAX_READS), rd(ipa_regs.base + IPA_COMP_CFG), rd(ipa_regs.base + IPA_IDLE_INDICATION_CFG),
-	    rd(ipa_regs.base + IPA_ROUTE), rd(ipa_regs.base + IPA_SRC_RSRC_GRP_01(0)) & 0x3f, rd(ipa_regs.base + IPA_SRC_RSRC_GRP_01(1)) & 0x3f,
-	    rd(ipa_regs.base + IPA_SRC_RSRC_GRP_01(2)) & 0x3f, rd(ipa_regs.base + IPA_SRC_RSRC_GRP_01(3)) & 0x3f,
-	    rd(ipa_regs.base + IPA_SRC_RSRC_GRP_01(4)) & 0x3f, rd(ipa_regs.base + IPA_DST_RSRC_GRP_01(0)), rd(ipa_regs.base + IPA_DST_RSRC_GRP_23(0)));
+	for (unsigned n = 0; n < 5; n++) {
+		wrong += rd(ipa_regs.base + IPA_SRC_RSRC_GRP_01(n)) != source[n].groups_01;
+		wrong += rd(ipa_regs.base + IPA_SRC_RSRC_GRP_23(n)) != source[n].groups_23;
+	}
+	for (unsigned n = 0; n < 3; n++) {
+		wrong += rd(ipa_regs.base + IPA_DST_RSRC_GRP_01(n)) != destination[n].groups_01;
+		wrong += rd(ipa_regs.base + IPA_DST_RSRC_GRP_23(n)) != destination[n].groups_23;
+	}
+	printf("mpss: ipa: the hardware set up as Linux's driver does before the modem: COMP_CFG %#x, QSB %#x %#x, timestamps %#x, pulse "
+	    "generators %#x (wanted 0xb63), divider %#x, idle %#x, interrupts enabled %#x pending %#x, route %#x\n",
+	    rd(ipa_regs.base + IPA_COMP_CFG), rd(ipa_regs.base + IPA_QSB_MAX_WRITES), rd(ipa_regs.base + IPA_QSB_MAX_READS),
+	    rd(ipa_regs.base + IPA_QTIME_TIMESTAMP_CFG), rd(ipa_regs.base + IPA_TIMERS_PULSE_GRAN_CFG),
+	    rd(ipa_regs.base + IPA_TIMERS_XO_CLK_DIV_CFG), rd(ipa_regs.base + IPA_IDLE_INDICATION_CFG), rd(ipa_regs.base + IPA_IRQ_EN),
+	    rd(ipa_regs.base + IPA_IRQ_STTS), rd(ipa_regs.base + IPA_ROUTE));
+	printf("mpss: ipa: resource groups, sources (groups 0 and 1, then 2): %#x %#x, %#x %#x, %#x %#x, %#x %#x, %#x %#x\n",
+	    rd(ipa_regs.base + IPA_SRC_RSRC_GRP_01(0)), rd(ipa_regs.base + IPA_SRC_RSRC_GRP_23(0)), rd(ipa_regs.base + IPA_SRC_RSRC_GRP_01(1)),
+	    rd(ipa_regs.base + IPA_SRC_RSRC_GRP_23(1)), rd(ipa_regs.base + IPA_SRC_RSRC_GRP_01(2)), rd(ipa_regs.base + IPA_SRC_RSRC_GRP_23(2)),
+	    rd(ipa_regs.base + IPA_SRC_RSRC_GRP_01(3)), rd(ipa_regs.base + IPA_SRC_RSRC_GRP_23(3)), rd(ipa_regs.base + IPA_SRC_RSRC_GRP_01(4)),
+	    rd(ipa_regs.base + IPA_SRC_RSRC_GRP_23(4)));
+	printf("mpss: ipa: resource groups, destinations (groups 0 and 1, then 2 and 3): %#x %#x, %#x %#x, %#x %#x; %s\n",
+	    rd(ipa_regs.base + IPA_DST_RSRC_GRP_01(0)), rd(ipa_regs.base + IPA_DST_RSRC_GRP_23(0)), rd(ipa_regs.base + IPA_DST_RSRC_GRP_01(1)),
+	    rd(ipa_regs.base + IPA_DST_RSRC_GRP_23(1)), rd(ipa_regs.base + IPA_DST_RSRC_GRP_01(2)), rd(ipa_regs.base + IPA_DST_RSRC_GRP_23(2)),
+	    wrong == 0 ? "all sixteen read back as written" : "NOT ALL READ BACK AS WRITTEN");
+	if (wrong != 0) {
+		tell("mpss: ipa: %u OF THE IPA'S 16 RESOURCE LIMIT REGISTERS DO NOT READ BACK AS WRITTEN (the kernel's log has them)\n", wrong);
+	}
 }
 
 
@@ -2161,6 +2292,15 @@ ipa_space_on(void)
 	/* the rest of DDR (the phone has 6 or 8 GB from 0x80000000), as 1 GB blocks of the root: the data path's rings and
 	 * buffers (hakios.ipa.c) are wherever the kernel's memory is */
 	for (unsigned g = (IPA_SPACE_BASE >> 30) + 1; g < (IPA_SPACE_BASE >> 30) + 8; g++) {
+		root[g] = ((uint64_t)g << 30) | IPA_BLOCK;
+	}
+	/*
+	 * (garnet) ... and the memory this phone has above 32 GB (the loader's map: the larger part of its DDR is from
+	 * 0x800000000), where most of the kernel's own memory is, the data path's rings and buffers with it: sixteen
+	 * gigabytes from there, as they are. Without them the IPA's first command was refused by the SMMU (a
+	 * translation fault at 0x84e324000).
+	 */
+	for (unsigned g = 32; g < 48; g++) {
 		root[g] = ((uint64_t)g << 30) | IPA_BLOCK;
 	}
 	root[ipa_imem >> 30] = kvtophys((vm_offset_t)soc) | IPA_TABLE;
@@ -2417,12 +2557,38 @@ ipa_firmware_load(void)
 	if (!option("modem_ipa_quiet")) {
 		ipa_status("after its firmware's start");
 	}
+	ipa_data_failed = false;
 	if (!option("modem_ipa_raw")) {
-		ipa_memory_init();
-		ipa_hardware_init();
-		/* this processor's own channels and endpoints, and the IPA's tables, before the modem (hakios.ipa.c); then en1 on them */
-		if (hakios_ipa_data_setup()) {
-			hakios_cell_attach();
+		/*
+		 * The IPA's memory and registers, then this processor's own channels and endpoints and the IPA's tables,
+		 * before the modem (hakios.ipa.c); then en1 on them. A stage that fails ends it there: the IPA stays on
+		 * (the modem expects its clock), but the modem's IPA driver is then told nothing (ipa_qmi_start()) and no
+		 * data session is started (data_wanted()), which is how this phone ran before any of this was written.
+		 */
+		if (!ipa_memory_init()) {
+			ipa_data_failed = true;
+			tell("mpss: %u: THE IPA'S DATA PATH IS NOT SET UP: its local memory is not as expected\n", step);
+		} else {
+			ipa_hardware_init();
+			if (hakios_ipa_data_setup()) {
+				char line[256];
+
+				hakios_ipa_status(line, sizeof(line));
+				tell("mpss: %u: THE IPA'S DATA PATH IS UP: %s\n", step, line);
+				hakios_cell_attach();
+			} else if (option("modem_ipa_data_off")) {
+				printf("mpss: %u: the IPA is set up without this processor's data path (modem_ipa_data_off)\n", step);
+			} else {
+				ipa_data_failed = true;
+				tell("mpss: %u: THE IPA'S DATA PATH IS NOT SET UP: %s\n", step, hakios_ipa_data_failure());
+			}
+		}
+		if (ipa_data_failed) {
+			tell("mpss: %u: so the modem's IPA driver will be told nothing and no data session started, whatever was asked\n", step);
+		}
+		if (!option("modem_ipa_quiet")) {
+			ipa_status("after its setup");
+			ipa_space_faults("after the IPA's setup");
 		}
 	}
 	ok = true;
@@ -2450,6 +2616,10 @@ ipa_firmware_stop(void)
 {
 	uint64_t answer = ~0ull;
 
+	/* this processor's data path first, while the IPA and the GSI still answer: after this nothing of theirs is touched */
+	if (!leaving) {
+		hakios_ipa_data_stop();
+	}
 	(void)scm("to shut the IPA's firmware down", SCM_PAS_SHUTDOWN, SCM_ONE_VALUE, pas_ipa, 0, 0, 0, &answer);
 	if (!leaving) {
 		ipa_space_off();
@@ -2494,7 +2664,7 @@ step_start(void)
 	bzero(&doorbell, sizeof(doorbell));
 	lck_mtx_lock(&dsp_lock);
 	{
-		uint32_t ipa_fw = 0;                    /* (garnet: its IPA is 5.2, and what is here knows 4.11) */
+		uint32_t ipa_fw = 1;                    /* (modem_ipa_fw=0: the IPA is left alone, and with it there is no data) */
 
 		PE_parse_boot_argn("modem_ipa_fw", &ipa_fw, sizeof(ipa_fw));
 		ipa_loaded = ipa_fw != 0 && ipa_firmware_load();
@@ -4763,7 +4933,7 @@ servreg_receive(__unused void *context, uint32_t node, uint32_t port, const void
  * QMI before the modem uses the IPA: the application processor hosts service 0x31 instance 1 (the
  * modem registers for an indication there, 0x20, and says when its driver is up, 0x35), and asks
  * the modem's service 0x31 instance 2 to initialize its driver (0x21) with where the tables are in
- * the IPA's local memory -- the layout of IPA v4.11 (Linux: ipa_data-v4.11.c) --, then tells it
+ * the IPA's local memory -- the layout of IPA v5.2 (Linux: data/ipa_data-v5.2.c) --, then tells it
  * that all is complete (indication 0x22). Without this the modem's LTE downlink task dies on a
  * null pointer the moment the modem goes online (23 October: enl2_dl, three of three).
  */
@@ -4946,17 +5116,35 @@ ipa_client_receive(__unused void *context, uint32_t node, uint32_t port, const v
 	}
 }
 
-/* The IPA's local memory as IPA v4.11 lays it out (Linux: ipa_data-v4.11.c), told to the modem. */
+/*
+ * The IPA's local memory as IPA 5.2 lays it out, told to the modem: the request Linux's
+ * init_modem_driver_req() (ipa_qmi.c) builds from the regions of data/ipa_data-v5.2.c and its
+ * modem_route_count of 11, TLV for TLV: eighteen of them, 158 bytes with the header. The second
+ * word of a route table's TLV is the last index that is the modem's (10 of 0..18); the modem's
+ * driver refuses a smaller one ("v4_route_tbl_info.num_indices >= rtng_tbl_max": what the 4.11
+ * layout's 7 got). Linux adds the local memory's offset to the two statistics sizes as well as
+ * to their addresses, which is kept, as the request is meant to be Linux's exactly.
+ *
+ * Android's driver for this IPA sends three more, which Linux does not (ipa_qmi_service.c,
+ * ipa3_qmi_init_modem_send_sync_msg()): where the filter and route statistics are and which
+ * counters of them are the modem's (0x23), the size of the IPA's item in the shared memory
+ * (0x24), and the address of the 2 KB at the item's start that it uses for statistics of its
+ * own (0x25). modem_ipa_init_android=1 adds them, should this modem's driver want them; 193
+ * bytes then, which the buffer holds.
+ */
 static void
 ipa_init_driver(void)
 {
 	uint8_t packet[200];
 	unsigned at = 7;
-	uint32_t routes = 8;                    /* the route tables' entries the modem may use: indices 0..7 of 15 (Android's driver:
-	                                         * v4_modem_rt_index_hi 7; its log "num_indices 7"); modem_ipa_routes=N */
+	uint32_t routes = 11;                   /* the route tables' entries that are the modem's: indices 0..10 of 19 (Linux:
+	                                         * modem_route_count; Android: v4_modem_rt_index_hi 0xa); modem_ipa_routes=N */
+	uint32_t skip = 0, to_modem = 0, from_modem = 0;
 	const uint32_t o = ipa_mem_offset;
 
 	PE_parse_boot_argn("modem_ipa_routes", &routes, sizeof(routes));
+	PE_parse_boot_argn("modem_ipa_skip_uc", &skip, sizeof(skip));
+	hakios_ipa_modem_endpoints(&to_modem, &from_modem);
 
 	ipa_transaction = (uint16_t)(ipa_transaction + 1 == 0 ? 1 : ipa_transaction + 1);
 	packet[0] = QMI_REQUEST;
@@ -4964,44 +5152,64 @@ ipa_init_driver(void)
 	packet[2] = (uint8_t)(ipa_transaction >> 8);
 	packet[3] = IPA_QMI_INIT_DRIVER;
 	packet[4] = 0;
-	at += qmi_put_u32(packet + at, 0x10, 3);                                /* platform: 3 = MSM Android (Android's log: "platform_type 3"; 1 is a data card) */
-	at += qmi_put_pair(packet + at, 0x11, o + 0x0688, o + 0x0688 + 0x0240 - 1); /* the modem's headers */
-	at += qmi_put_pair(packet + at, 0x12, o + 0x0508, routes - 1);          /* IPv4 routes */
-	at += qmi_put_pair(packet + at, 0x13, o + 0x0608, routes - 1);          /* IPv6 routes */
+	at += qmi_put_u32(packet + at, 0x10, 3);                                /* platform: 3 = MSM Android (1 is a data card) */
+	at += qmi_put_pair(packet + at, 0x11, o + 0x0708, o + 0x0708 + 0x0240 - 1); /* the modem's headers: first and last byte */
+	at += qmi_put_pair(packet + at, 0x12, o + 0x0528, routes - 1);          /* IPv4 routes: the table, the modem's last index */
+	at += qmi_put_pair(packet + at, 0x13, o + 0x0668, routes - 1);          /* IPv6 routes */
 	at += qmi_put_u32(packet + at, 0x14, o + 0x0308);                       /* IPv4 filters */
 	at += qmi_put_u32(packet + at, 0x15, o + 0x0408);                       /* IPv6 filters */
-	at += qmi_put_pair(packet + at, 0x16, o + 0x27d8, 0x800);               /* the modem's own region (Android: modem_ofst 0x27d8, 0x800) */
-	at += qmi_put_u32(packet + at, 0x17, 16);                               /* our endpoint for its control messages (AP_MODEM_RX) */
-	{
-		/*
-		 * TLV 0x18 is "is_ssr_bootup" to Android's driver (skip_uc_load to Linux's): whether the modem is
-		 * being restarted with the IPA's microcontroller already loaded. Android leaves it out on the first
-		 * boot (its log: "is_ssr_bootup 0", not sent), and the modem then loads the microcontroller itself
-		 * (its "booted" events follow the answer). Sent as 1 with modem_ipa_skip_uc=1 only.
-		 */
-		uint32_t skip = 0;
-
-		PE_parse_boot_argn("modem_ipa_skip_uc", &skip, sizeof(skip));
-		if (skip != 0) {
-			packet[at++] = 0x18;
-			packet[at++] = 1;
-			packet[at++] = 0;
-			packet[at++] = 1;
-		}
+	at += qmi_put_pair(packet + at, 0x16, o + 0x2898, 0x0d48);              /* the modem's own region: where, how large */
+	at += qmi_put_u32(packet + at, 0x17, from_modem);                       /* our endpoint for its control messages (AP_MODEM_RX: 18) */
+	/*
+	 * TLV 0x18 is skip_uc_load to Linux's driver ("is_ssr_bootup" to Android's): whether the modem is being
+	 * restarted with the IPA's microcontroller already loaded. Linux always sends it, as 0 the first time, and
+	 * the modem then loads the microcontroller itself; Android leaves it out the first time. Sent as 0, as
+	 * Linux; modem_ipa_skip_uc=1 sends 1, modem_ipa_skip_uc=2 leaves it out as Android does.
+	 */
+	if (skip != 2) {
+		packet[at++] = 0x18;
+		packet[at++] = 1;
+		packet[at++] = 0;
+		packet[at++] = skip == 1 ? 1 : 0;
 	}
-	at += qmi_put_pair(packet + at, 0x19, o + 0x0ad0, o + 0x0ad0 + 0x0ac0 - 1); /* the modem's processing contexts (Android: 0xad0, 0xac0) */
+	at += qmi_put_pair(packet + at, 0x19, o + 0x0b40, o + 0x0b40 + 0x0b20 - 1); /* the modem's processing contexts: first and last byte */
 	at += qmi_put_pair(packet + at, 0x1b, o + 0x0488, routes - 1);          /* hashed IPv4 routes */
-	at += qmi_put_pair(packet + at, 0x1c, o + 0x0588, routes - 1);          /* hashed IPv6 routes */
+	at += qmi_put_pair(packet + at, 0x1c, o + 0x05c8, routes - 1);          /* hashed IPv6 routes */
 	at += qmi_put_u32(packet + at, 0x1d, o + 0x0288);                       /* hashed IPv4 filters */
 	at += qmi_put_u32(packet + at, 0x1e, o + 0x0388);                       /* hashed IPv6 filters */
-	at += qmi_put_u32(packet + at, 0x1f, o + 0x1d00);                       /* the modem's quota statistics (Android: stats_quota_q6 0x1d00, 0x30) */
-	at += qmi_put_u32(packet + at, 0x20, 0x30);
-	at += qmi_put_u32(packet + at, 0x21, o + 0x27b0);                       /* drop statistics (Android: stats_drop 0x27b0, 0x20) */
-	at += qmi_put_u32(packet + at, 0x22, 0x20);
+	at += qmi_put_u32(packet + at, 0x1f, o + 0x1868);                       /* the modem's quota statistics */
+	at += qmi_put_u32(packet + at, 0x20, o + 0x0060);                       /* ... and their size (with the offset added: see above) */
+	at += qmi_put_u32(packet + at, 0x21, o + 0x2870);                       /* drop statistics */
+	at += qmi_put_u32(packet + at, 0x22, o + 0x0020);
+	if (option("modem_ipa_init_android")) {
+		/* 0x23: the filter and route statistics at 0x1cd0 (Android does not add the offset here), 0x340 bytes of
+		 * them the modem's: counters 128 to 179, 16 bytes each */
+		packet[at++] = 0x23;
+		packet[at++] = 10;
+		packet[at++] = 0;
+		for (unsigned b = 0; b < 4; b++) {
+			packet[at + b] = (uint8_t)(0x1cd0u >> (8 * b));
+			packet[at + 4 + b] = (uint8_t)(0x0340u >> (8 * b));
+		}
+		at += 8;
+		packet[at++] = 128;
+		packet[at++] = 179;
+		at += qmi_put_pair(packet + at, 0x24, 0, IPA_ITEM_SIZE);        /* the IPA's item: no address, its size */
+		at += qmi_put_pair(packet + at, 0x25, ipa_item_phys, 0x800);    /* the item's first 2 KB, by address */
+		tell("mpss: ipa: INIT_DRIVER with Android's three more (modem_ipa_init_android): statistics 0x1cd0/0x340/128..179, the item "
+		    "%#x bytes, its first 2 KB at %#x%s\n", IPA_ITEM_SIZE, ipa_item_phys, ipa_item_phys == 0 ? " (THE ITEM WAS NOT FOUND)" : "");
+	}
 	packet[5] = (uint8_t)(at - 7);
 	packet[6] = (uint8_t)((at - 7) >> 8);
-	printf("mpss: ipa: about to ask the modem's IPA driver (node %u port %u) to initialize with the IPA's memory layout (%u bytes, "
-	    "offset %#x)\n", ipa_modem_node, ipa_modem_port, at, o);
+	tell("mpss: ipa: about to ask the modem's IPA driver (node %u port %u) to initialize with the IPA 5.2 layout: %u bytes, offset %#x, "
+	    "routes 0..%u of 19 at %#x/%#x %#x/%#x, modem region %#x, control endpoint %u, skip_uc %s\n", ipa_modem_node, ipa_modem_port, at,
+	    o, routes - 1, o + 0x0488, o + 0x0528, o + 0x05c8, o + 0x0668, o + 0x2898, from_modem,
+	    skip == 2 ? "left out" : skip == 1 ? "1" : "0");
+	printf("mpss: ipa: INIT_DRIVER:");
+	for (unsigned i = 0; i < at; i++) {
+		printf(" %02x", packet[i]);
+	}
+	printf("\n");
 	if (qrtr_send(ipa_client_port, ipa_modem_node, ipa_modem_port, packet, at) != 0) {
 		printf("mpss: ipa: INIT_DRIVER not sent\n");
 	}
@@ -5040,11 +5248,16 @@ static bool
 ipa_qmi_start(void)
 {
 	/*
-	 * (garnet) Not unless asked (modem_ipa_qmi=1): what is said to the modem's IPA driver here is the IPA 4.11's
-	 * memory layout, and this modem's driver (IPA 5.2) gives up on it ("v4_route_tbl_info.num_indices >=
-	 * rtng_tbl_max failed"). Without it the modem runs, with no data path.
+	 * What is said to the modem's IPA driver is the IPA 5.2's memory layout as Linux tells it, which this modem takes
+	 * (told the 4.11 layout it gave up: "v4_route_tbl_info.num_indices >= rtng_tbl_max failed"). Not said with
+	 * modem_no_ipa_qmi=1, nor when the IPA was not loaded, nor when the IPA runs but its memory or this processor's
+	 * side of it could not be set up: the modem would be sent to tables that are not there.
 	 */
-	if (!option("modem_ipa_qmi")) {
+	if (option("modem_no_ipa_qmi") || !ipa_loaded) {
+		return false;
+	}
+	if (ipa_data_failed) {
+		tell("mpss: ipa: THE MODEM'S IPA DRIVER IS TOLD NOTHING (modem_ipa_qmi): the IPA's data path was not set up\n");
 		return false;
 	}
 	if (ipa_host_port == NULL) {
@@ -5412,14 +5625,15 @@ dms_online(void)
 static bool keep;                       /* (defined below: the DSP and the link stay up with modem=1) */
 #define QMI_WDS                 0x01
 /*
- * (garnet) A data session only when asked for (modem_data=1), and never with modem_data_off=1: this phone's IPA is
- * 5.2, hakios.ipa.c knows 4.11, and a session started before the IPA's driver has been told its tables makes the
- * modem give up ("ipa_sio.c: Init message from A7 not yet received").
+ * A data session, unless modem_data_off=1: started once the modem is registered, when the IPA has been loaded and set
+ * up and the modem's IPA driver told its tables. A session started before that makes the modem give up ("ipa_sio.c:
+ * Init message from A7 not yet received"), so there is none when the IPA was left alone (modem_ipa_fw=0) or its data
+ * path could not be set up.
  */
 static bool
 data_wanted(void)
 {
-	return option("modem_data") && !option("modem_data_off");
+	return !option("modem_data_off") && ipa_loaded && !ipa_data_failed;
 }
 
 #define WDS_START_NETWORK_INTERFACE 0x0020
@@ -5449,7 +5663,7 @@ static void wds_send_start(void);
  *
  *   1. DPM Open Port (Data Port Mapper, service 0x2f, 0x20): the hardware data port -- the embedded
  *      endpoint, interface 1, and the IPA endpoints it runs on. The modem's receiving end is our
- *      transmit endpoint (2) and its transmitting end our receive endpoint (16), which is how Linux
+ *      transmit endpoint (2) and its transmitting end our receive endpoint (18 on IPA 5.2), which is how Linux
  *      exports them (ipa_sysfs.c: modem/tx_endpoint_id, rx_endpoint_id) and MM hands them over.
  *      Without this the modem knows no embedded port: WDA answers InvalidOperation, the mux bind
  *      Internal, the session InvalidOperation -- what cycles 38 to 41 got.
@@ -5555,7 +5769,7 @@ dpm_server(__unused void *context, bool arrived, uint32_t service, __unused uint
 		return;
 	}
 	if (arrived) {
-		uint32_t to_modem = 2, from_modem = 16;
+		uint32_t to_modem = 2, from_modem = 18;
 		/* TLV 0x11, the hardware data ports: a one-byte count, then per port the endpoint type, the interface
 		 * number, the modem's receiving endpoint (ours that sends) and its transmitting one (ours that receives) */
 		uint8_t request[7 + 3 + 1 + 16] = { 0, 0x45, 0, DPM_OPEN_PORT & 0xff, DPM_OPEN_PORT >> 8, 20, 0, 0x11, 17, 0, 1 };
@@ -6128,6 +6342,10 @@ step_nas(void)
 		printf("mpss: %u: no port for DMS\n", step);
 		return false;
 	}
+	/* calls and USSD (hakios.voice.c): its client waits for the voice service as this one does for its own */
+	if (hakios_voice_open(&qrtr_ops) != 0) {
+		printf("mpss: %u: no port for the voice service: no calls, no USSD\n", step);
+	}
 	if (hakios_nas_client_open(&nas, &qrtr_ops, nas_changed, NULL) != 0) {
 		printf("mpss: %u: no port for NAS\n", step);
 		return false;
@@ -6255,6 +6473,7 @@ nas_stop(void)
 		}
 	}
 	if (nas_opened) {
+		hakios_voice_close();
 		hakios_nas_client_close(&nas);
 		nas_opened = false;
 	}

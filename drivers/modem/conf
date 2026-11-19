@@ -10,6 +10,7 @@ driver MODEM
 	file    bsd/dev/hakios.mpss.c
 	file    bsd/dev/hakios.cell.c
 	file    bsd/dev/hakios.nas.c
+	file    bsd/dev/hakios.voice.c
 	file    bsd/dev/hakios.ipa.c
 	requires QMI UFS
 	help    the modem (modem=1): started, its file systems served from the flash, the IPA's data path as en1,

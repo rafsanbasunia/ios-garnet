@@ -129,7 +129,10 @@ def main():
     path, _ = find(nodes, 'qcom,ipa')
     ipa_region, gsi_base = reg_address(nodes, path), reg_address(nodes, path, 1)
     if ipa_region is not None and gsi_base is not None:
-        address('soc_ipa_base', ipa_region + 0x40000, bits=64)  # the IPA registers are 0x40000 into the region
+        # the IPA's registers are 0x40000 into the region, or where the vendor's tree says (qcom,ipa-cfg-offset)
+        cfg = nodes[path].get('qcom,ipa-cfg-offset')
+        offset = u32(cfg) if cfg else 0
+        address('soc_ipa_base', ipa_region + (offset if offset else 0x40000), bits=64)
         address('soc_gsi_base', gsi_base, bits=64)
 
     def block(compatible, arg, index=0):

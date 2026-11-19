@@ -131,7 +131,7 @@ just not shown on the panel.
 
 ## Cellular (off unless asked for)
 
-- `modem=1` (K): bring the modem up beside the system: online, the SIM cards, the registration, the signal for the status bar. Needs `ufs=2` and the modem's firmware in the system image. Restart the phone after a session with it. In no option; add it to option 4's line.
+- `modem=1` (K): bring the modem up beside the system: online, the SIM cards, the registration, the signal for the status bar, mobile data (`modem_data_off=1`: none), USSD and calls. Needs `ufs=2` and the modem's firmware in the system image. Restart the phone after a session with it. In no option; add it to option 4's line.
 - `ufs=2` (KL): the phone's storage read through the loader, for the modem's file systems. Nothing is written.
 - `modem_step=N` (K): bring-up only, steps 1 to N. More in `docs/garnet/CELLULAR.md`.
 

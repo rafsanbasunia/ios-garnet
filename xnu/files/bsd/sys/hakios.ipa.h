@@ -28,6 +28,14 @@
  */
 bool hakios_ipa_data_setup(void);
 bool hakios_ipa_data_ready(void);
+/* Why hakios_ipa_data_setup() last returned false: the first stage that failed, in words ("" if none did). */
+const char *hakios_ipa_data_failure(void);
+/*
+ * Take the data path down: nothing is sent or polled any more, and the channels and event rings
+ * are given back to the GSI. Before the IPA's firmware is shut down and its clock turned off
+ * (nothing of the IPA may be touched after that). Not on a panic's way out (it takes a lock).
+ */
+void hakios_ipa_data_stop(void);
 /* One IP packet to the modem on QMAP mux `mux`. Copied. False if dropped (no room, too long). */
 bool hakios_ipa_transmit(uint8_t mux, const void *packet, size_t length);
 /*
