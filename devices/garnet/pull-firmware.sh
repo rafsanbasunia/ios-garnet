@@ -44,6 +44,18 @@ pull fw-audio /vendor/etc/aw882xx_acf.bin
 # Haptic: AW8697 / Awinic
 pull fw-haptic /vendor/firmware/aw8697_haptic.bin
 
+# Bluetooth: the chip's patch and its settings, for every revision of the chip the phone has files for (the driver
+# asks the chip which it is). Readable only as root: copied out through su into /data/local/tmp first.
+stage=/data/local/tmp/hakios-bt
+if adb shell "su -c 'rm -rf $stage && mkdir -p $stage && cd /vendor/bt_firmware/image && cp crbtfw*.tlv crnv*.bin apbtfw*.tlv apnv*.bin $stage/ && chmod -R a+rX $stage'" 2>/dev/null; then
+	rm -rf fw-bt && mkdir -p fw-bt
+	adb pull $stage/. fw-bt/ >/dev/null 2>&1 || echo "pull-firmware.sh: the Bluetooth firmware: not pulled"
+	adb shell "su -c 'rm -rf $stage'" >/dev/null 2>&1 || true
+	echo "pull-firmware.sh: fw-bt: $(find fw-bt -type f | wc -l | tr -d ' ') files"
+else
+	echo "pull-firmware.sh: /vendor/bt_firmware/image: not readable (needs root)"
+fi
+
 # Modem: its image (every segment the phone has; they are readable only as root on most builds), and of the firmware
 # partition's image/ what the modem and the kernel ask for while it runs: the IPA's firmware, the service registry's
 # *.jsn and the carrier configurations (modem_pr/). They are copied out through su into /data/local/tmp first.

@@ -228,6 +228,7 @@ if [ -d $DARWIN/rootfs/usr/lib ]; then
 		$DYN -framework CoreFoundation -framework CoreGraphics -framework CoreText -o obj/font_test src/font_test.c
 		$DYN -fobjc-arc -framework Foundation -framework SystemConfiguration -o obj/net_test src/net_test.m
 		$DYN -o obj/cell_test src/cell_test.c
+		$DYN -o obj/bt_test src/bt_test.c
 		# (with an entitlement for "battery_test open URL", if ldid is there: src/battery_test.c)
 		$DYN -framework CoreFoundation -framework IOKit -lsqlite3 -o obj/battery_test src/battery_test.c &&
 			{ ${LDID:-ldid} -Ssrc/battery_test.entitlements obj/battery_test 2>/dev/null ||
@@ -366,6 +367,7 @@ if [ -d $DARWIN/rootfs/usr/lib ]; then
 	[ -f obj/fps_info ] && cp obj/fps_info root/bin/
 	[ -f obj/net_test ] && cp obj/net_test root/bin/
 	[ -f obj/cell_test ] && cp obj/cell_test root/bin/
+	[ -f obj/bt_test ] && cp obj/bt_test root/bin/
 	[ -f obj/battery_test ] && cp obj/battery_test root/bin/
 	[ -f obj/keychain_test ] && cp obj/keychain_test root/bin/
 	[ -f obj/wifipw_test ] && cp obj/wifipw_test root/bin/
@@ -497,6 +499,12 @@ if [ -f ../fw-wifi/wpss.mdt ]; then
 	rm -f root/fw/network
 	# SHARE=1: leave it out, for an image that is going to somebody else -- it is a passphrase
 	if [ -z "$SHARE" ] && [ -f ../fw-wifi/network ]; then install -m 0600 ../fw-wifi/network root/fw/network; fi
+fi
+# ... and the Bluetooth half's patch and settings, from /vendor/bt_firmware/image of the same Android into ../fw-bt
+# (drivers/bluetooth/hakios.btqca.c; half a megabyte for every revision of the chip)
+if ls ../fw-bt/*.tlv >/dev/null 2>&1; then
+	mkdir -p root/fw
+	install -m 0644 ../fw-bt/*.tlv ../fw-bt/*.bin root/fw/
 fi
 # ... and the vibration motor's waveforms, the phone's /vendor/firmware/aw8697_haptic.bin, from ../fw-haptic
 # (drivers/haptic/hakios.haptic.c, haptic=3; 3.6 KB, the vendor's and not in the repository either)

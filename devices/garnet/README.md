@@ -33,6 +33,7 @@ The device folder of ios-garnet, kept in the tree (`devices/manifest.conf`: `pat
 | **Audio** | **Works** (speakers) | The audio DSP (AudioReach/GPR) plays what iOS plays through both AW88261 amplifiers; on by default with the phone's audio firmware. No microphones, headphones or calls. See `docs/garnet/AUDIO.md`. |
 | **Battery** | **Partial** | Battery level read through PMIC; in-kernel charging not implemented (phone discharges during session). |
 | **Wi-Fi** | **Works** | WCN3990-class radio on the WPSS DSP, Linux ath10k (snoc) in the kernel (`wifi=1`). Settings scans and joins 2.4 and 5 GHz WPA2 networks; DHCP and DNS. No WPA3. |
+| **Bluetooth** | **Partial** | With `bt=3` the WCN3991 is switched on over its UART, given its patch and settings, and answers HCI; programs reach it as `/dev/hakios-bt`. iOS's Bluetooth daemon does not use it yet. See `docs/garnet/BLUETOOTH.md`. |
 | **Cellular** | **Partial** | With `modem=1 ufs=2` the modem goes online, finds the SIM cards and registers on LTE; signal bars in the status bar; mobile data through the IPA 5.2 (`en1`); USSD; calls made and answered but silent. No SMS; restart the phone after such a session. See `docs/garnet/CELLULAR.md`. |
 
 ---

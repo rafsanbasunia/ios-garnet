@@ -61,8 +61,11 @@ APPLOG_NAME	arg	applog_name	CPU, memory and boot	k	(patch)
 AUTOUNLOCK	arg	autounlock	User space	u	inject_sb.c	
 BATTERY	arg	battery	Audio and battery	kl	hakios.adsp.c,hakios.battery.c,loader.c	
 BATTMGR	arg	battmgr	Audio and battery	k	hakios.adsp.c	every property once, for the log (which number is which on this phone's firmware)
-BT	arg	bt	User space	k	hakios.bt.c	
+BT	arg	bt	User space	k	hakios.bt.c,hakios.btqca.c	the engine looked at: its protocol, its FIFO, the pins (clocks are switched on; nothing else)
 BT_AGAIN	arg	bt_again	User space	k	hakios.bt.c	the second look this many seconds later (0: no second look; 30)
+BT_DELAY	arg	bt_delay	User space	k	hakios.btqca.c	seconds after the kernel's start at which this begins (12: after the Wi-Fi half has its supplies)
+BT_SAMPLE	arg	bt_sample	User space	k	hakios.btqca.c	the UART's samples per bit, 16 or 32 (16; the other is tried when the chip does not answer)
+BT_SCAN	arg	bt_scan	User space	k	hakios.btqca.c	how long the scan of bt=4 lasts (5)
 BUTTONS	arg	buttons	Touch and buttons	k	hakios.buttons.c	
 BUTTONS_STEPS	arg	buttons_steps	Touch and buttons	k	hakios.buttons.c	
 CA_DIRTY	arg	ca_dirty	User space	u	inject.c	

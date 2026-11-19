@@ -31,7 +31,9 @@ Status: November 2026.
 
 ## What does not work (yet)
 
-- Bluetooth, camera, sensors, GPS.
+- Camera, sensors, GPS.
+- Bluetooth: the controller is up and scans (`bt=3`, [docs/garnet/BLUETOOTH.md](docs/garnet/BLUETOOTH.md)), but iOS does
+  not use it yet: nothing in Settings.
 - Cellular: calls have no sound; no SMS; the Phone application dials, but a call's screen is a plain prompt and
   calls are not listed under Recents;
   off unless asked for, and the phone has to be restarted after a session with it

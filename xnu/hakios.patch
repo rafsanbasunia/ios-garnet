@@ -122,7 +122,7 @@ diff --git a/bsd/conf/files b/bsd/conf/files
 index 44274016a4cf..27cccab98c8e 100644
 --- a/bsd/conf/files
 +++ b/bsd/conf/files
-@@ -109,6 +109,52 @@ bsd/dev/munge.c 			optional config_requires_u32_munging
+@@ -109,6 +109,53 @@ bsd/dev/munge.c 			optional config_requires_u32_munging
  bsd/dev/unix_startup.c			standard
  
  bsd/dev/monotonic.c optional monotonic
@@ -143,6 +143,7 @@ index 44274016a4cf..27cccab98c8e 100644
 +bsd/dev/hakios.mic.c                     optional hakios_mic
 +bsd/dev/hakios.virtio_sound.c            optional hakios_virtio_sound
 +bsd/dev/hakios.bt.c                      optional hakios_bt
++bsd/dev/hakios.btqca.c                   optional hakios_btqca
 +bsd/dev/hakios.camera.c                  optional hakios_camera
 +bsd/dev/hakios.torch.c                   optional hakios_torch
 +bsd/dev/hakios.socinfo.c                 optional hakios_socinfo
