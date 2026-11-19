@@ -1,16 +1,18 @@
 # Bluetooth on the POCO X6 5G
 
-Off unless asked for: `bt=3` on the kernel's command line.
+On (`bt=3`) with the phone's Bluetooth firmware in the image (`fw-bt/`, below).
 
 ## What works
 
 - the chip switched on, asked which it is, and given its patch and its settings;
 - HCI: reset, the controller's version (Bluetooth 5.2) and address, a scan for Bluetooth LE advertisements;
 - the controller for programs: `/dev/hakios-bt` carries HCI in H4 packets both ways (`bt_test` reads the version
-  through it and counts advertisements).
+  through it and counts advertisements);
+- Darwin's Bluetooth daemon on it: its stack comes up, Settings shows Bluetooth switched on and searches, the
+  daemon scans for Bluetooth LE devices and runs inquiries.
 
-Not done: Darwin's Bluetooth daemon does not use the controller, so there is nothing in Settings, no pairing and
-no audio. The UART stays at 115200 baud, which is enough for commands and Bluetooth LE and not for audio.
+Not tried: finding a device in Settings, pairing, audio. The UART stays at 115200 baud, which is enough for
+commands and Bluetooth LE and not for audio. The phone has no name of its own in Settings ("(null)").
 
 ## The hardware
 
@@ -38,6 +40,24 @@ polled (`qcom_geni_serial.c` has the registers):
 
 Half a minute passes between the kernel's start and the controller being there: twelve seconds of waiting
 (`bt_delay`) and thirteen for the patch at 115200 baud.
+
+## Darwin's Bluetooth daemon
+
+`bluetoothd` is written for the Broadcom chip of an iPhone. Four things stand between it and this controller:
+
+- the address: the daemon reads it from a registry entry named `bluetooth` (`local-mac-address`), which
+  `drivers/bluetooth/hakios.btnode.cpp` makes. The chip's settings hold an address that is the same in every
+  phone, so the driver writes one made of the SoC's serial number into the chip first;
+- the firmware: before anything else the daemon asks the service `com.apple.BlueTool` to run its "boot" and
+  "init" scripts, which load Broadcom's firmware. `userland/src/bt_tool.c` answers for that service: done;
+- the UART: on an iPhone it is a kernel control (`com.apple.uart.sk.bluetooth`) whose bytes go through a Skywalk
+  channel. `userland/src/inject_bt.c`, a library inside the daemon, answers for the control and is the channel:
+  two rings of slots in the daemon's own memory, behind which is `/dev/hakios-bt`;
+- the commands: the same library reads what the daemon sends. Commands of Broadcom's own (group 0x3f) are not
+  sent on but answered as done, with the length of answer the daemon insists on for each (found by letting the
+  daemon fail and trying the next length: the library does that by itself and says what it found). A command the
+  controller does not know is answered as done too, and "LE read periodic advertiser list size" is kept from the
+  controller, which would otherwise refuse the scan commands the daemon uses afterwards.
 
 ## Firmware
 

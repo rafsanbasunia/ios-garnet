@@ -2028,7 +2028,7 @@ diff --git a/iokit/conf/files b/iokit/conf/files
 index 5fb0a52062e0..7cfee3142b5b 100644
 --- a/iokit/conf/files
 +++ b/iokit/conf/files
-@@ -79,6 +79,17 @@ iokit/Kernel/IOSubMemoryDescriptor.cpp			optional iokitcpp
+@@ -79,6 +79,18 @@ iokit/Kernel/IOSubMemoryDescriptor.cpp			optional iokitcpp
  iokit/Kernel/IOGuardPageMemoryDescriptor.cpp		optional iokitcpp
  
  iokit/Kernel/IOPlatformExpert.cpp			optional iokitcpp
@@ -2040,6 +2040,7 @@ index 5fb0a52062e0..7cfee3142b5b 100644
 +iokit/Kernel/hakios.gpu.cpp              optional hakios_adreno iokitcpp
 +iokit/Kernel/hakios.battery.cpp          optional hakios_battery iokitcpp
 +iokit/Kernel/hakios.wlan.cpp             optional hakios_wifi iokitcpp
++iokit/Kernel/hakios.btnode.cpp           optional hakios_btqca iokitcpp
 +# end of the HakiOS drivers
 +iokit/Kernel/MiniAppleKeyStore.cpp			optional iokitcpp
 +iokit/Kernel/MiniIONetworkStack.cpp			optional iokitcpp

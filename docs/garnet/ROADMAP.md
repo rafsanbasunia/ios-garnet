@@ -10,7 +10,7 @@ Development happens on the `dev` branch; `main` holds what works.
 - Wi-Fi: WPA3, active scanning on 5 GHz.
 - Cellular: the sound of a call, SMS, the call screen and the list of recent calls; the restart needed after a
   session with the modem.
-- Bluetooth: Darwin's daemon on the controller (Settings, pairing, audio); a faster UART.
+- Bluetooth: pairing, audio, a faster UART, the phone's name.
 - Microphones, camera.
 
 ## iOS 26

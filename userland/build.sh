@@ -124,6 +124,12 @@ DARWIN_JOBS=${JOBS-"
 # (Count a QEMU run log with its duplicate lines removed: run-darwin.sh prints launchd's log twice.)
 # WIFID=0 leaves it out.
 [ "${WIFID-1}" != 0 ] && DARWIN_JOBS="$DARWIN_JOBS com.apple.wifid"
+# Darwin's Bluetooth daemon, where the controller's firmware has been pulled from the phone (../fw-bt, see below:
+# without it there is no controller, and the daemon would be started again every ten seconds for nothing). It is
+# written for Broadcom's chip: src/inject_bt.c inside it stands between it and this phone's controller, and
+# src/bt_tool.c answers for BlueTool, which on an iPhone loads that chip's firmware. BT=0 leaves it out.
+BT_FW=; ls ../fw-bt/*.tlv >/dev/null 2>&1 && BT_FW=1
+[ -n "$BT_FW" ] && [ "${BT-1}" != 0 ] && DARWIN_JOBS="$DARWIN_JOBS com.apple.bluetoothd"
 # The programs (file names) started with a library of ours inside them: "LIBRARY NAME..." per line
 # (src/inject.c is libhakios.dylib, src/inject_sb.c is libhakios.sb.dylib, src/inject_media.c is
 # libhakios.media.dylib).
@@ -136,6 +142,7 @@ SILEO_BIN="chmod cp mkdir mv rm"
 INJECT=${INJECT-"/redwood/lib/libhakios.dylib backboardd containermanagerd containermanagerd_system
 /redwood/lib/libhakios.sb.dylib SpringBoard
 /redwood/lib/libhakios.phone.dylib MobilePhone
+/redwood/lib/libhakios.bt.dylib bluetoothd
 /redwood/lib/libhakios.media.dylib mediaserverd
 /redwood/lib/libhakios.app.dylib Sileo
 /redwood/lib/libhakios.tweaks.dylib Preferences"}
@@ -229,6 +236,7 @@ if [ -d $DARWIN/rootfs/usr/lib ]; then
 		$DYN -fobjc-arc -framework Foundation -framework SystemConfiguration -o obj/net_test src/net_test.m
 		$DYN -o obj/cell_test src/cell_test.c
 		$DYN -o obj/bt_test src/bt_test.c
+		$DYN -o obj/bt_tool src/bt_tool.c
 		# (with an entitlement for "battery_test open URL", if ldid is there: src/battery_test.c)
 		$DYN -framework CoreFoundation -framework IOKit -lsqlite3 -o obj/battery_test src/battery_test.c &&
 			{ ${LDID:-ldid} -Ssrc/battery_test.entitlements obj/battery_test 2>/dev/null ||
@@ -256,6 +264,8 @@ if [ -d $DARWIN/rootfs/usr/lib ]; then
 		# ... and inside the Phone application, whose call button goes to the modem driver (src/inject_phone.c)
 		$DYN -dynamiclib -install_name /redwood/lib/libhakios.phone.dylib -framework Foundation -lobjc \
 			-o obj/libhakios.phone.dylib src/inject_phone.c
+		# ... and inside Darwin's Bluetooth daemon, between it and this phone's controller (src/inject_bt.c)
+		$DYN -dynamiclib -install_name /redwood/lib/libhakios.bt.dylib -o obj/libhakios.bt.dylib src/inject_bt.c
 		$DYN -O2 -dynamiclib -install_name /redwood/lib/libhakios.media.dylib -framework CoreFoundation -framework CoreMedia \
 			-framework CoreVideo -framework IOSurface -lobjc \
 			-o obj/libhakios.media.dylib src/inject_media.c src/camera_device.c src/camera_isp.c
@@ -368,6 +378,7 @@ if [ -d $DARWIN/rootfs/usr/lib ]; then
 	[ -f obj/net_test ] && cp obj/net_test root/bin/
 	[ -f obj/cell_test ] && cp obj/cell_test root/bin/
 	[ -f obj/bt_test ] && cp obj/bt_test root/bin/
+	[ -f obj/bt_tool ] && cp obj/bt_tool root/bin/
 	[ -f obj/battery_test ] && cp obj/battery_test root/bin/
 	[ -f obj/keychain_test ] && cp obj/keychain_test root/bin/
 	[ -f obj/wifipw_test ] && cp obj/wifipw_test root/bin/
@@ -385,6 +396,7 @@ if [ -d $DARWIN/rootfs/usr/lib ]; then
 	[ -f obj/libhakios.media.dylib ] && cp obj/libhakios.media.dylib root/lib/     # (as with cpu_test)
 	[ -f obj/libhakios.app.dylib ] && cp obj/libhakios.app.dylib root/lib/
 	[ -f obj/libhakios.phone.dylib ] && cp obj/libhakios.phone.dylib root/lib/
+	[ -f obj/libhakios.bt.dylib ] && cp obj/libhakios.bt.dylib root/lib/
 	[ -f obj/libhakios.tweaks.dylib ] && cp obj/libhakios.tweaks.dylib root/lib/
 	if [ -f obj/HakiosAudio ]; then
 		mkdir -p root/lib/HakiosAudio.driver
@@ -475,6 +487,8 @@ if [ -d $DARWIN/rootfs/usr/lib ]; then
 	# and not by what select-system.py extracted here (--root-volume; seven jobs turn on the difference,
 	# fairplayd among them).
 	cp com.hakios.demo.plist com.hakios.wifi.plist com.hakios.cell.plist root/LaunchDaemons/
+	# (in BlueTool's place, for the Bluetooth daemon: started only when that asks for it)
+	[ -n "$BT_FW" ] && [ "${BT-1}" != 0 ] && [ -f obj/bt_tool ] && cp com.hakios.bluetool.plist root/LaunchDaemons/
 	VOLUME=""
 	[ -n "$FLASHBOOT" ] && [ -f $DARWIN/rootfs.slt ] && VOLUME="--root-volume $DARWIN/rootfs.slt"
 	[ -n "$DARWIN_JOBS" ] && OSLOG=${OSLOG-com.apple.backboardd} ./mkjobs.py ${REST:+--rest} $VOLUME $DARWIN/rootfs root/LaunchDaemons $DARWIN_JOBS

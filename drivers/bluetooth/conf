@@ -8,5 +8,7 @@ driver BT
 
 driver BTQCA
 	file    bsd/dev/hakios.btqca.c
+	file    iokit/Kernel/hakios.btnode.cpp iokitcpp
 	help    Bluetooth of the POCO X6 5G (garnet): the WCN399x chip on its UART, switched on, patched, and handed to
-	help    programs as /dev/hakios-bt, HCI in H4 packets (bt=3). Needs fw-bt/ from the phone
+	help    programs as /dev/hakios-bt, HCI in H4 packets (bt=3); its address in the registry for Darwin's
+	help    Bluetooth daemon. Needs fw-bt/ from the phone

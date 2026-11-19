@@ -46,6 +46,7 @@
 #include <sys/fcntl.h>
 #include <sys/proc.h>
 #include <sys/select.h>
+#include <sys/sysctl.h>
 #include <sys/systm.h>
 #include <sys/uio.h>
 #include <sys/vnode.h>
@@ -53,6 +54,8 @@
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern vm_offset_t ml_io_map_wcomb(vm_offset_t phys_addr, vm_size_t size);
 extern const uint8_t *hakios_image_file(const char *dir, const char *name, uint64_t *size, int *disk_out);
+extern bool hakios_soc_serial(uint32_t *serial);
+extern void hakios_bt_publish(const uint8_t *address);      /* (hakios.btnode.cpp) */
 
 static vm_offset_t tlmm, gcc, se, rsc, cmd_db;
 static uint32_t level, sample = 16, scan_seconds = 5;
@@ -892,6 +895,77 @@ download(const char *name, bool is_settings)
 	return true;
 }
 
+/*
+ * The controller's address. The chip's settings hold one that is the same in every phone; Android keeps the
+ * phone's own in its storage and writes it into the chip at every start. Here one is made of the SoC's serial
+ * number: this phone's alone, and the same at every start. It is written with the chip's own command for it.
+ */
+static uint8_t address[6];      /* as it is written down, the first byte first */
+static bool address_set;
+static int controller_up;
+
+static void
+address_give(void)
+{
+	uint8_t reversed[6], event[32];
+	uint32_t serial = 0, length;
+	uint64_t mixed;
+
+	if (!hakios_soc_serial(&serial)) {
+		printf("bt: the SoC's serial number is not to be had: the controller keeps the address of its settings\n");
+	} else {
+		mixed = (serial ^ 0x426c7565ull) * 0x9e3779b97f4a7c15ull;      /* (spread over the bytes: not the number itself) */
+		mixed ^= mixed >> 29;
+		address[0] = 0x06;
+		for (unsigned i = 1; i < 6; i++) {
+			address[i] = (uint8_t)(mixed >> (8 * i));
+		}
+		/* (this command takes the address as it is written down, not last byte first as HCI has it) */
+		if (command_out(0xfc14, address, 6)) {
+			length = event_wait(newer ? EVENT_COMMAND_COMPLETE : EVENT_VENDOR, 0xfc14, event, sizeof(event), 2000, false);
+			if (length == 0) {
+				printf("bt: the address was not taken\n");
+			}
+		}
+	}
+	length = command(0x1009, NULL, 0, event, sizeof(event), "the address");
+	if (length >= 12) {
+		bool ours = true, none = true;
+
+		for (unsigned i = 0; i < 6; i++) {
+			ours = ours && event[6 + i] == address[5 - i];
+			none = none && event[6 + i] == 0;
+			reversed[i] = event[11 - i];
+		}
+		memcpy(address, reversed, 6);
+		address_set = !none;
+		printf("bt: THE CONTROLLER IS UP: its address is %s\n", ours ? "this phone's own, made of the SoC's serial number" :
+		    none ? "missing" : "the one of its settings");
+		if (address_set) {
+			hakios_bt_publish(address);
+		}
+	}
+}
+
+SYSCTL_DECL(_kern_hakios);
+
+static int
+sysctl_bt_address SYSCTL_HANDLER_ARGS
+{
+#pragma unused(oidp, arg1, arg2)
+	char text[24] = "";
+
+	if (address_set) {
+		snprintf(text, sizeof(text), "%02x:%02x:%02x:%02x:%02x:%02x", address[0], address[1], address[2], address[3], address[4],
+		    address[5]);
+	}
+	return SYSCTL_OUT(req, text, strlen(text) + 1);
+}
+SYSCTL_PROC(_kern_hakios, OID_AUTO, bt_address, CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_LOCKED, 0, 0, sysctl_bt_address, "A",
+    "the Bluetooth controller's address");
+SYSCTL_INT(_kern_hakios, OID_AUTO, bt_up, CTLFLAG_RD | CTLFLAG_LOCKED, &controller_up, 0,
+    "0 no Bluetooth asked for, 1 the controller is being started, 2 it is a program's (/dev/hakios-bt), -1 it failed");
+
 static bool
 chip_start(void)
 {
@@ -943,16 +1017,8 @@ chip_start(void)
 		printf("bt: HCI version %u (revision 0x%04x), LMP %u (0x%04x), maker 0x%04x\n", event[6], event[7] | event[8] << 8,
 		    event[9], event[12] | event[13] << 8, event[10] | event[11] << 8);
 	}
-	length = command(0x1009, NULL, 0, event, sizeof(event), "the address");
-	if (length >= 12) {
-		bool none = true;
-
-		for (unsigned i = 6; i < 12; i++) {
-			none = none && event[i] == 0;
-		}
-		printf("bt: THE CONTROLLER IS UP: it has %s address\n", none ? "no" : "an");
-	}
-	return length != 0;
+	address_give();
+	return address_set;
 }
 
 /* Bluetooth LE advertisements counted for a while: the radio hears. */
@@ -1167,6 +1233,7 @@ serve(void)
 		return;
 	}
 	printf("bt: THE CONTROLLER IS A PROGRAM'S (/dev/hakios-bt): HCI in H4 packets, 115200 baud\n");
+	controller_up = 2;
 	for (;;) {
 		uart_poll();
 		if (!packets_take()) {
@@ -1219,6 +1286,7 @@ bt_thread(__unused void *parameter, __unused wait_result_t result)
 	pins_show("as a UART");
 	if (!chip_start()) {
 		printf("bt: the chip was not started\n");
+		controller_up = -1;
 		return;
 	}
 	if (level >= 4) {
@@ -1243,6 +1311,7 @@ bt_init(void)
 	if (PE_parse_boot_argn("bt_scan", &value, sizeof(value)) && value >= 1 && value <= 120) {
 		scan_seconds = value;
 	}
+	controller_up = level >= 3 ? 1 : 0;
 	if (kernel_thread_start(bt_thread, NULL, &thread) == KERN_SUCCESS) {
 		thread_deallocate(thread);
 	}
