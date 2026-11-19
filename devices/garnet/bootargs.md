@@ -129,6 +129,12 @@ just not shown on the panel.
 - `metal_specfull` (U): CoreAnimation's uber shader specialised by all 52 bytes of its configuration, as before; without it only the bytes that decide its branches count, so one specialisation serves every colour and opacity. For comparison only.
 - `metal_nospec` (U): no uber shader specialised at all (slow; for comparison only).
 
+## Cellular (off unless asked for)
+
+- `modem=1` (K): bring the modem up beside the system: online, the SIM cards, the registration, the signal for the status bar. Needs `ufs=2` and the modem's firmware in the system image. Restart the phone after a session with it. In no option; add it to option 4's line.
+- `ufs=2` (KL): the phone's storage read through the loader, for the modem's file systems. Nothing is written.
+- `modem_step=N` (K): bring-up only, steps 1 to N. More in `docs/garnet/CELLULAR.md`.
+
 ## Added by the loader (not in the menu's sets)
 
 - `debug=0x8`: XNU debug flags (serial/kprintf logging).

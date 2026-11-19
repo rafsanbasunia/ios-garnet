@@ -44,8 +44,17 @@ pull fw-audio /vendor/etc/aw882xx_acf.bin
 # Haptic: AW8697 / Awinic
 pull fw-haptic /vendor/firmware/aw8697_haptic.bin
 
-# Modem
-pull fw-modem /vendor/firmware_mnt/image/modem.mdt $(for i in $(seq -w 0 28); do echo /vendor/firmware_mnt/image/modem.b$i; done)
-mkdir -p fw-modem/image && adb pull /vendor/firmware_mnt/image fw-modem/ >/dev/null 2>&1 || true
+# Modem: its image (every segment the phone has; they are readable only as root on most builds), and of the firmware
+# partition's image/ what the modem and the kernel ask for while it runs: the IPA's firmware, the service registry's
+# *.jsn and the carrier configurations (modem_pr/). They are copied out through su into /data/local/tmp first.
+stage=/data/local/tmp/hakios-modem
+if adb shell "su -c 'rm -rf $stage && mkdir -p $stage/image && cd /vendor/firmware_mnt/image && cp modem.mdt modem.b[0-9][0-9] $stage/ && cp ipa_fws.* *.jsn $stage/image/ && cp -r modem_pr $stage/image/ && chmod -R a+rX $stage'" 2>/dev/null; then
+	rm -rf fw-modem && mkdir -p fw-modem
+	adb pull $stage/. fw-modem/ >/dev/null 2>&1 || echo "pull-firmware.sh: the modem's firmware: not pulled"
+	adb shell "su -c 'rm -rf $stage'" >/dev/null 2>&1 || true
+	echo "pull-firmware.sh: fw-modem: $(find fw-modem -type f | wc -l | tr -d ' ') files"
+else
+	echo "pull-firmware.sh: /vendor/firmware_mnt/image/modem.*: not readable (needs root)"
+fi
 
 echo "pull-firmware.sh: done"

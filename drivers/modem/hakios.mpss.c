@@ -31,6 +31,19 @@
  * The modem and the Wi-Fi DSP may run at the same time: the mailbox to the always-on
  * processor and the lock for allocating in the shared memory are shared, each behind a lock.
  *
+ * The POCO X6 5G (garnet, SM7435) is the phone this copy is set for (dt: remoteproc-mss@04080000, "parrot"), and
+ * what differs there from the above is said where it is used:
+ *   - the modem's memory is 0x8bc00000, 230 MB; TrustZone is told the image's own span (215 MB), not the whole of it:
+ *     told the whole, the modem starts, says it has its own power and never says "up"
+ *   - the image's header has to be handed to TrustZone from below 4 GB
+ *   - its rails are cx.lvl and mss.lvl (the device tree calls the second one "mx"), and xo.lvl is asked for too
+ *   - the doorbells are at 0xed18000, the RPMh controller at 0x17a20000
+ *   - its IPA is version 5.2, which hakios.ipa.c (4.11) does not drive: the IPA's firmware is not loaded, its
+ *     driver in the modem is told nothing, and no data session is started unless asked (modem_data=1)
+ *   - the first request to shut a stopped modem down is refused by TrustZone and the second taken
+ *   - after a session with the modem the phone has to be restarted before the system is started again: a second
+ *     kernel in the same session of the loader hangs within seconds (why is not known)
+ *
  * Boot-arg modem_step=N performs steps 1 to N and stops; modem=1 is all of them, on a thread
  * beside the system's start, and the modem stays on, its network state asked every two seconds.
  *
@@ -613,7 +626,8 @@ static struct block aoss = { "mailbox", 0x0c300000, 0x400 };
 #define IPCC_GLINK              0u
 #define IPCC_SMP2P              2u
 
-static struct block ipcc = { "ipcc", 0x00408000, 0x1000 };
+/* (garnet, SM7435: dt qcom,ipcc@ed18000; the POCO X5 Pro this was written on has it at 0x408000) */
+static struct block ipcc = { "ipcc", 0x0ed18000, 0x1000 };
 
 static struct {
 	uint32_t glink, smp2p, said;
@@ -804,7 +818,8 @@ struct cmd_db_entry {
 
 static const struct cmd_db_header *cmd_db;
 
-static struct block rsc = { "rsc", 0x18220000, 0x10000 };
+/* (garnet: dt rsc@17a00000 "apps_rsc", its drv-2 at 0x17a20000; the POCO X5 Pro has it at 0x18220000) */
+static struct block rsc = { "rsc", 0x17a20000, 0x10000 };
 #define RSC_TCS_BASE            0xd00
 #define RSC_IRQ_STATUS          (RSC_TCS_BASE + 0x04)   /* a bit per TCS: done */
 #define RSC_IRQ_CLEAR           (RSC_TCS_BASE + 0x08)
@@ -879,6 +894,7 @@ rail_position(const char *name, uint32_t level, uint32_t *address)
 static bool
 rails(uint32_t level)
 {
+	/* (garnet: dt cx-supply and mx-supply of remoteproc-mss; the second is the regulator of the resource mss.lvl, whatever its name) */
 	static const char *const names[2] = { "cx.lvl", "mss.lvl" };
 	uint32_t addresses[2] = { 0, 0 }, values[2] = { 0, 0 }, done = 0;
 	uint64_t began;
@@ -886,8 +902,20 @@ rails(uint32_t level)
 	for (unsigned r = 0; r < 2; r++) {
 		int position = level == 0 ? 0 : rail_position(names[r], level, &addresses[r]);
 
+		/* (garnet: Android's regulator for mss.lvl goes no higher than 320) */
+		if (position < 0 && level == 384) {
+			position = rail_position(names[r], 320, &addresses[r]);
+		}
+
 		if (level == 0) {
 			rail_position(names[r], 0, &addresses[r]);
+			/*
+			 * (garnet) Neither rail is given back to 0. CX is everybody's rail and this is the only request
+			 * the application processors have made of it since the boot loader's: it stays where the start
+			 * put it. The modem's own rail goes to its lowest level, 56: Android's regulator for it allows 56
+			 * to 320 and never turns it off.
+			 */
+			position = rail_position(names[r], r == 0 ? 384 : 56, &addresses[r]);
 		}
 		if (position < 0 || addresses[r] == 0) {
 			printf("mpss: %u: no position for %s at level %u: the rails are not asked\n", step, names[r], level);
@@ -1044,9 +1072,11 @@ step_survey(void)
 
 /* ---- step 2: the firmware -------------------------------------------------------------------------- */
 
-#define MPSS_MEMORY_DEFAULT     0x8b800000u   /* dt: reserved-memory mpss@..., memory-region of qcom,mss */
+/* (garnet: dt reserved-memory mpss_region@8bc00000, 230 MB, memory-region of remoteproc-mss@04080000; the image is
+ * linked there and takes 215 MB of it. The POCO X5 Pro has 246 MB at 0x8b800000.) */
+#define MPSS_MEMORY_DEFAULT     0x8bc00000u
 static uint32_t mpss_memory = MPSS_MEMORY_DEFAULT;
-#define MPSS_MEMORY_SIZE        0x0f600000u
+#define MPSS_MEMORY_SIZE        0x0e600000u
 #define PAS_MPSS_DEFAULT        4               /* dt: qcom,pas-id of qcom,mss */
 static uint32_t pas_mpss = PAS_MPSS_DEFAULT;
 
@@ -1304,7 +1334,7 @@ scm(const char *what, uint64_t function, uint64_t arguments, uint64_t first, uin
 	printf("mpss: %u: about to ask TrustZone %s: smc %#llx, arguments %#llx, %#llx, %#llx\n", step, what, function, first,
 	    second, third);
 	snprintf(last_write, sizeof(last_write), "step %u asked TrustZone %#llx(%#llx, %#llx)", step, function, first, second);
-	for (int i = 0; i < 100; i++) {
+	for (int i = 0; i < 2000000; i++) {             /* (Linux asks again for as long as it is told "interrupted": a shutdown takes many) */
 		register uint64_t x0 __asm__("x0") = i == 0 ? function : SCM_INTERRUPTED;
 		register uint64_t x1 __asm__("x1") = arguments;
 		register uint64_t x2 __asm__("x2") = first;
@@ -1435,6 +1465,15 @@ dsp_shutdown(const char *why)
 	}
 	stopped_by_its_word = dsp_ask_to_stop(leaving ? 2000 : 5000);
 	result = scm("to shut the modem down", SCM_PAS_SHUTDOWN, SCM_ONE_VALUE, pas_mpss, 0, 0, 0, &answer);
+	/*
+	 * (garnet) The first request is refused (-3145800) for a modem that has just stopped or given up, and the next
+	 * is taken: Android's kernel meets the same ("PAS Shutdown: First call to shutdown failed", then "Attempting to
+	 * shutdown peripheral 1 time(s)") and asks again, as is done here.
+	 */
+	for (unsigned again = 0; again < 5 && (result != 0 || answer != 0); again++) {
+		sleep_ms(100);
+		result = scm("to shut the modem down, again", SCM_PAS_SHUTDOWN, SCM_ONE_VALUE, pas_mpss, 0, 0, 0, &answer);
+	}
 	if (result != 0 || answer != 0) {
 		printf("mpss: %u: TRUSTZONE DOES NOT SHUT THE MODEM DOWN: the call returns %d, its answer is %#llx\n", step, result,
 		    answer);
@@ -1462,11 +1501,15 @@ dsp_shutdown(const char *why)
 
 /* ---- step 4: TrustZone takes the header ------------------------------------------------------------ */
 
+#define RMTFS_BUFFER_PA_DEFAULT 0x89400000ull   /* garnet: dt reserved-memory cdsp_region@89400000, 10 MB (the CDSP is not started here) */
+#define HEADER_AFTER_BUFFER     0x300000u
+static volatile uint8_t *header_window;
+static uint64_t header_pa;
+
 static bool
 step_header(void)
 {
 	struct smp2p words;
-	vm_offset_t page = 0;
 	uint64_t answer = ~0ull;
 	int32_t result;
 
@@ -1488,17 +1531,26 @@ step_header(void)
 		printf("mpss: %u: the DSP has left nothing in the shared memory: it has not run since the phone was started\n", step);
 	}
 
-	announce("hand the image's header to TrustZone to check its signature (image 4), in a page of ours");
-	if (kmem_alloc(kernel_map, &page, PAGE_SIZE, KMA_KOBJECT | KMA_ZERO | KMA_DATA, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
-		printf("mpss: %u: no memory\n", step);
+	/*
+	 * The header has to be below 4 GB for the modem (Linux, this SoC: dma_phys_below_32b of the modem's loader;
+	 * the audio DSP's may be anywhere): TrustZone refuses one from above. The kernel's own memory is not to be had
+	 * there, so it is a page of the compute DSP's reserved memory, behind the buffer for the modem's files
+	 * (rmtfs_buffer_make() has the first 2.5 MB), through an uncached window.
+	 */
+	announce("hand the image's header to TrustZone to check its signature (image 4), in a page below 4 GB");
+	header_pa = RMTFS_BUFFER_PA_DEFAULT + HEADER_AFTER_BUFFER;
+	if (header_window == NULL) {
+		header_window = (volatile uint8_t *)ml_io_map_unmappable((vm_offset_t)header_pa, PAGE_SIZE, VM_WIMG_WCOMB);
+	}
+	if (header_window == NULL || image.header_size > PAGE_SIZE) {
+		printf("mpss: %u: no place for the header\n", step);
 		return false;
 	}
-	memcpy((void *)page, image.header, image.header_size);
-	for (vm_offset_t line = page; line < page + PAGE_SIZE; line += 64) {
-		__asm__ volatile ("dc civac, %0" : : "r" (line));
+	for (uint32_t i = 0; i < PAGE_SIZE; i++) {
+		header_window[i] = i < image.header_size ? image.header[i] : 0;
 	}
 	settle();
-	result = scm("to take the modem's header", SCM_PAS_INIT_IMAGE, SCM_VALUE_AND_BUFFER, pas_mpss, kvtophys(page), 0, 0, &answer);
+	result = scm("to take the modem's header", SCM_PAS_INIT_IMAGE, SCM_VALUE_AND_BUFFER, pas_mpss, header_pa, 0, 0, &answer);
 	if (result != 0 || answer != 0) {
 		printf("mpss: %u: TRUSTZONE DOES NOT TAKE THE HEADER: the call returns %d, its answer is %#llx\n", step, result, answer);
 		return false;
@@ -1506,7 +1558,8 @@ step_header(void)
 	printf("mpss: %u: TRUSTZONE ACCEPTS THE MODEM'S SIGNATURE FROM THIS KERNEL\n", step);
 
 	announce("tell TrustZone where the image will be: the whole of the modem's memory, as Linux does");
-	result = scm("where the image will be", SCM_PAS_MEM_SETUP, SCM_THREE_VALUES, pas_mpss, mpss_memory, MPSS_MEMORY_SIZE, 0, &answer);
+	result = scm("where the image will be", SCM_PAS_MEM_SETUP, SCM_THREE_VALUES, pas_mpss, mpss_memory,
+	    option("modem_whole_memory") ? MPSS_MEMORY_SIZE : image.size, 0, &answer);       /* (garnet: Linux here gives the image's span) */
 	if (result != 0 || answer != 0) {
 		printf("mpss: %u: TRUSTZONE DOES NOT TAKE THE PLACE: the call returns %d, its answer is %#llx\n", step, result, answer);
 		return false;
@@ -1727,7 +1780,7 @@ step_our_item(void)
 	 * driver here). Off unless modem_ipa=1 (valid, off) or 3 (on): with the entry the run of 23 October hung.
 	 */
 	{
-		uint32_t ipa = 3;                       /* (the modem's IPA driver waits for this entry to exist: see the IPA's handshake) */
+		uint32_t ipa = 0;                       /* (the modem's IPA driver waits for this entry to exist: see the IPA's handshake) */
 
 		PE_parse_boot_argn("modem_ipa", &ipa, sizeof(ipa));
 		if (ipa != 0) {
@@ -1801,7 +1854,8 @@ static uint32_t pas_ipa = PAS_IPA_DEFAULT;
  * which starts it, never answered INIT_DRIVER. Should the microcontroller fetch its code from DDR at
  * the address Android uses, this is why. modem_ipa_fw_at=ADDRESS chooses (0x8b700000 allows 0x1a000).
  */
-static uint32_t ipa_fw_memory = 0x8b710000u, ipa_fw_size = 0xa000u;
+/* (garnet: dt reserved-memory ipa_gsi_region@89e10000, 0xa000 bytes, memory-regions of qcom,ipa@3e00000) */
+static uint32_t ipa_fw_memory = 0x89e10000u, ipa_fw_size = 0xa000u;
 
 
 /*
@@ -1963,8 +2017,8 @@ ipa_hardware_init(void)
  * gives the IPA's streams the mask 0, so each takes a match register of its own, with the mask 0,
  * both sending to the one context.
  */
-#define IPA_STREAM_DEFAULT      0x480u
-#define IPA_STREAM_UC_DEFAULT   0x482u          /* the IPA's microcontroller: its own match register */
+#define IPA_STREAM_DEFAULT      0x4a0u
+#define IPA_STREAM_UC_DEFAULT   0x4a2u          /* the IPA's microcontroller: its own match register */
 static uint32_t ipa_stream = IPA_STREAM_DEFAULT, ipa_stream_uc = IPA_STREAM_UC_DEFAULT;  /* dt: iommus of ipa_smmu_ap and ipa_smmu_uc */
 #define IPA_SPACE_BASE          0x80000000ull   /* a gigabyte from here, as it is */
 #define IPA_IMEM_DEFAULT        0x14600000u   /* the 2 MB block that holds the SoC internal memory (dt: qcom,msm-imem) */
@@ -2212,7 +2266,7 @@ ipa_firmware_load(void)
 		 * on the first phone, something else on another SoC); soc_ipa_fw= overrides the name */
 		char fw[80], path[96];
 
-		strlcpy(fw, "yupik_ipa_fws", sizeof(fw));
+		strlcpy(fw, "ipa_fws", sizeof(fw));           /* (garnet: dt firmware-names of qcom,ipa) */
 		PE_parse_boot_argn("soc_ipa_fw", fw, sizeof(fw));
 		snprintf(path, sizeof(path), "image/%s.mdt", fw);
 		header = root_file(path, &header_size);
@@ -2258,7 +2312,7 @@ ipa_firmware_load(void)
 			goto out;
 		}
 		if (segments[i].file_size != 0) {
-			snprintf(name, sizeof(name), "image/yupik_ipa_fws.b%02u", i);
+			snprintf(name, sizeof(name), "image/ipa_fws.b%02u", i);
 			segment_file[i] = root_file(name, &segment_size[i]);
 			if (segment_file[i] == NULL || segment_size[i] != segments[i].file_size) {
 				printf("mpss: %u: fw/%s: %s\n", step, name, segment_file[i] == NULL ? "not there" : "not the size the header says");
@@ -2320,7 +2374,7 @@ ipa_firmware_load(void)
 	 */
 	for (uint32_t i = 0; i < count; i++) {
 		if (segments[i].type == 1 && !MDT_HASH(segments[i].flags) && segment_file[i] != NULL && segments[i].file_size >= 16 &&
-		    segments[i].vaddr >= 0x01e00000u && segments[i].vaddr < 0x01f00000u) {
+		    segments[i].vaddr >= 0x03e00000u && segments[i].vaddr < 0x03f00000u) {
 			struct block iram = { "ipa iram", segments[i].vaddr & ~0xfffu, 0x8000 };
 			uint32_t n = segments[i].file_size < 256 ? segments[i].file_size : 256, same = 0, first[4];
 
@@ -2340,7 +2394,7 @@ ipa_firmware_load(void)
 		}
 	}
 	{
-		struct block gsi = { "gsi", 0x01e04000, 0xc000 };       /* GSI_CFG at 0, MCS_CFG at 0xb000 (the panic of cycle 26: 0x1000 mapped) */
+		struct block gsi = { "gsi", 0x03e04000, 0xc000 };       /* (garnet: dt gsi-base) */       /* GSI_CFG at 0, MCS_CFG at 0xb000 (the panic of cycle 26: 0x1000 mapped) */
 
 		need(&gsi);
 		tell("mpss: %u: GSI_CFG %#x (bit 0 GSI enable, 1 MCS enable, 2 double MCS clock, 3 uC is MCS, 4 power collapse, 5 bypass matrix off, "
@@ -2438,7 +2492,7 @@ step_start(void)
 	bzero(&doorbell, sizeof(doorbell));
 	lck_mtx_lock(&dsp_lock);
 	{
-		uint32_t ipa_fw = 1;
+		uint32_t ipa_fw = 0;                    /* (garnet: its IPA is 5.2, and what is here knows 4.11) */
 
 		PE_parse_boot_argn("modem_ipa_fw", &ipa_fw, sizeof(ipa_fw));
 		ipa_loaded = ipa_fw != 0 && ipa_firmware_load();
@@ -2447,6 +2501,15 @@ step_start(void)
 		printf("mpss: %u: the buffer is not shared with the modem (modem_share_off)\n", step);
 	} else if (!rmtfs_buffer_make() || !rmtfs_share(true)) {
 		printf("mpss: %u: THE MODEM GETS NO BUFFER FOR ITS FILES: it is started all the same, and will offer little\n", step);
+	}
+	if (!option("modem_xo_off")) {
+		/*
+		 * (garnet) Linux holds the clock "xo" for the modem while it starts (dt: clocks of remoteproc-mss, the
+		 * first of the RPMh clocks: the resource xo.lvl at 3). Nobody here has asked RPMh for it.
+		 */
+		bool xo = rpmh_command("xo.lvl", 3);
+
+		tell("mpss: %u: xo.lvl asked for at 3: %s\n", step, xo ? "taken" : "NOT TAKEN");
 	}
 	if (!rails(384)) {
 		lck_mtx_unlock(&dsp_lock);
@@ -2504,6 +2567,14 @@ step_start(void)
 			}
 			if ((state & DSP_HANDOVER) && !handed_over) {
 				handed_over = true;
+				/*
+				 * (garnet) This modem says so 23 ms after its start and does not say "up" in 30 s with nobody on
+				 * its link: Android's kernel has the link's memory registered before the start. So the link is
+				 * brought up without waiting for "up" (steps 8 to 10), and "up" is watched for from there.
+				 */
+				if (ready_at == 0 && limit > now + 1000000ull) {
+					limit = now + 1000000ull;
+				}
 				printf("mpss: %u: the DSP says it has asked for its own power (bit 2), %llu.%03llu ms after the start: ours is "
 				    "given back\n", step, (now - started) / 1000, (now - started) % 1000);
 				lck_mtx_lock(&dsp_lock);
@@ -2555,7 +2626,7 @@ step_start(void)
 		printf("mpss: %u: %s\n", step, spoke ? "THE MODEM RUNS BUT HAS NOT SAID \"UP\"" : "NOT A WORD FROM THE MODEM");
 		show_crash_reason();
 	}
-	return ready_at != 0;
+	return ready_at != 0 || handed_over;
 }
 
 /* ---- GLINK (hakios.wifi.c; items 478 to 480 of our partition with the modem) ------------------- */
@@ -3626,7 +3697,6 @@ rmtfs_load(void)
  * no-map: nothing of ours uses it, and the CDSP is never started here), through an uncached
  * window, as the modem reads it.
  */
-#define RMTFS_BUFFER_PA_DEFAULT 0x9c700000ull   /* dt: a window into reserved-memory cdsp@... (the CDSP is not started here) */
 
 static bool
 rmtfs_buffer_make(void)
@@ -3694,12 +3764,12 @@ rmtfs_share(bool in)
 		page->destinations[1].permission = VM_PERM_RW;
 		page->destinations[2].vmid = VMID_NAV;
 		page->destinations[2].permission = VM_PERM_RW;
-		destinations = option("modem_no_nav") ? 2 : 3;
+		destinations = option("modem_nav") ? 3 : 2;      /* (garnet: no qcom,vm-nav-path in its dt) */
 	} else {
 		page->sources[0] = VMID_HLOS;
 		page->sources[1] = VMID_MSS_MSA;
 		page->sources[2] = VMID_NAV;
-		sources = option("modem_no_nav") ? 2 : 3;
+		sources = option("modem_nav") ? 3 : 2;
 		page->destinations[0].vmid = VMID_HLOS;
 		page->destinations[0].permission = VM_PERM_RW;
 		destinations = 1;
@@ -4966,7 +5036,12 @@ ipa_client_server(__unused void *context, bool arrived, uint32_t service, __unus
 static bool
 ipa_qmi_start(void)
 {
-	if (option("modem_no_ipa_qmi")) {
+	/*
+	 * (garnet) Not unless asked (modem_ipa_qmi=1): what is said to the modem's IPA driver here is the IPA 4.11's
+	 * memory layout, and this modem's driver (IPA 5.2) gives up on it ("v4_route_tbl_info.num_indices >=
+	 * rtng_tbl_max failed"). Without it the modem runs, with no data path.
+	 */
+	if (!option("modem_ipa_qmi")) {
 		return false;
 	}
 	if (ipa_host_port == NULL) {
@@ -5333,6 +5408,17 @@ dms_online(void)
  */
 static bool keep;                       /* (defined below: the DSP and the link stay up with modem=1) */
 #define QMI_WDS                 0x01
+/*
+ * (garnet) A data session only when asked for (modem_data=1), and never with modem_data_off=1: this phone's IPA is
+ * 5.2, hakios.ipa.c knows 4.11, and a session started before the IPA's driver has been told its tables makes the
+ * modem give up ("ipa_sio.c: Init message from A7 not yet received").
+ */
+static bool
+data_wanted(void)
+{
+	return option("modem_data") && !option("modem_data_off");
+}
+
 #define WDS_START_NETWORK_INTERFACE 0x0020
 #define WDS_GET_CURRENT_SETTINGS 0x002d
 #define WDS_BIND_MUX_DATA_PORT  0x00a2
@@ -5604,19 +5690,19 @@ wds_server(__unused void *context, bool arrived, uint32_t service, __unused uint
 static void
 wds_open(void)
 {
-	if (wds_port == NULL && !option("modem_data_off")) {
+	if (wds_port == NULL && data_wanted()) {
 		wds_port = qrtr_open(wds_receive, wds_server, NULL);
 		if (wds_port != NULL) {
 			qrtr_lookup(wds_port, QMI_WDS, 0, 0);
 		}
 	}
-	if (dpm_port == NULL && !option("modem_dpm_off") && !option("modem_data_off")) {
+	if (dpm_port == NULL && !option("modem_dpm_off") && data_wanted()) {
 		dpm_port = qrtr_open(dpm_receive, dpm_server, NULL);
 		if (dpm_port != NULL) {
 			qrtr_lookup(dpm_port, QMI_DPM, 0, 0);
 		}
 	}
-	if (wda_port == NULL && !option("modem_wda_off") && !option("modem_data_off")) {
+	if (wda_port == NULL && !option("modem_wda_off") && data_wanted()) {
 		wda_port = qrtr_open(wda_receive, wda_server, NULL);
 		if (wda_port != NULL) {
 			qrtr_lookup(wda_port, QMI_WDA, 0, 0);
@@ -6094,7 +6180,7 @@ step_nas(void)
 				tell("mpss: nas: registered; the data session is given up to %u s to come up\n", data_wait);
 			}
 			/* stay in the loop until the data session is up or the data deadline passes */
-			if (wds_up || option("modem_data_off") || now_us() > data_deadline) {
+			if (wds_up || !data_wanted() || now_us() > data_deadline) {
 				break;
 			}
 		}

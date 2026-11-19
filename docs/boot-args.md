@@ -2,7 +2,7 @@
 
 Made by `tools/boot-args.py --markdown`; CI fails if it is out of date with the source (`tools/boot-args.py --check`).
 
-Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **384 arguments**: 312 read by the kernel, 16 by the loader, 69 by user space (one is read in more than one place).
+Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **387 arguments**: 315 read by the kernel, 16 by the loader, 69 by user space (one is read in more than one place).
 
 This is a catalogue of what exists and who reads it, not a manual. What an argument means is in the head of the file that reads it. The stable switches have a symbol in the configuration (`tools/hakios-config.py help SYMBOL`, `docs/configs.md`); the rest are the knobs of bring-up (a driver's steps, pauses, traces, test modes) and can change with the driver. Any of them can be given in a configuration with `CONFIG_BOOTARGS="name=value ..."`, which checks that each name is in this list. What the arguments of the two Metal paths do: [Metal on the Adreno](reference/metal.md#boot-arguments).
 
@@ -140,7 +140,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `wifi_watch` | K | `hakios.wifi.c` | `CONFIG_WIFI_WATCH` |  |
 | `wifi_wide` | K | `lx_80211.c` | `CONFIG_WIFI_WIDE` | implied by wifi=1 |
 
-## Cellular (53)
+## Cellular (56)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
@@ -148,6 +148,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `modem_again` | K | `hakios.mpss.c` | `CONFIG_MODEM_AGAIN` |  |
 | `modem_apn` | K | `hakios.mpss.c` | `CONFIG_MODEM_APN` |  |
 | `modem_buffer` | K | `hakios.mpss.c` | `CONFIG_MODEM_BUFFER` |  |
+| `modem_data` | K | `hakios.mpss.c` | `CONFIG_MODEM_DATA` |  |
 | `modem_data_nobind` | K | `hakios.mpss.c` | `CONFIG_MODEM_DATA_NOBIND` |  |
 | `modem_data_off` | K | `hakios.mpss.c` | `CONFIG_MODEM_DATA_OFF` |  |
 | `modem_data_wait` | K | `hakios.mpss.c` | `CONFIG_MODEM_DATA_WAIT` |  |
@@ -161,6 +162,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `modem_ipa_gsi_enable` | K | `hakios.mpss.c` | `CONFIG_MODEM_IPA_GSI_ENABLE` |  |
 | `modem_ipa_item` | K | `hakios.mpss.c` | `CONFIG_MODEM_IPA_ITEM` |  |
 | `modem_ipa_no_probe` | K | `hakios.mpss.c` | `CONFIG_MODEM_IPA_NO_PROBE` |  |
+| `modem_ipa_qmi` | K | `hakios.mpss.c` | `CONFIG_MODEM_IPA_QMI` |  |
 | `modem_ipa_quiet` | K | `hakios.mpss.c` | `CONFIG_MODEM_IPA_QUIET` |  |
 | `modem_ipa_raw` | K | `hakios.mpss.c` | `CONFIG_MODEM_IPA_RAW` |  |
 | `modem_ipa_routes` | K | `hakios.mpss.c` | `CONFIG_MODEM_IPA_ROUTES` |  |
@@ -169,9 +171,8 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `modem_keep` | K | `hakios.mpss.c` | `CONFIG_MODEM_KEEP` |  |
 | `modem_listen` | K | `hakios.mpss.c` | `CONFIG_MODEM_LISTEN` |  |
 | `modem_nas_wait` | K | `hakios.mpss.c` | `CONFIG_MODEM_NAS_WAIT` |  |
+| `modem_nav` | K | `hakios.mpss.c` | `CONFIG_MODEM_NAV` |  |
 | `modem_new` | K | `hakios.mpss.c` | `CONFIG_MODEM_NEW` |  |
-| `modem_no_ipa_qmi` | K | `hakios.mpss.c` | `CONFIG_MODEM_NO_IPA_QMI` |  |
-| `modem_no_nav` | K | `hakios.mpss.c` | `CONFIG_MODEM_NO_NAV` |  |
 | `modem_no_tftp` | K | `hakios.mpss.c` | `CONFIG_MODEM_NO_TFTP` |  |
 | `modem_online` | K | `hakios.mpss.c` | `CONFIG_MODEM_ONLINE` |  |
 | `modem_pause` | K | `hakios.mpss.c` | `CONFIG_MODEM_PAUSE` |  |
@@ -186,6 +187,8 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `modem_step` | K | `hakios.mpss.c` | `CONFIG_MODEM_STEP` |  |
 | `modem_wait` | K | `hakios.mpss.c` | `CONFIG_MODEM_WAIT` |  |
 | `modem_wda_off` | K | `hakios.mpss.c` | `CONFIG_MODEM_WDA_OFF` |  |
+| `modem_whole_memory` | K | `hakios.mpss.c` | `CONFIG_MODEM_WHOLE_MEMORY` |  |
+| `modem_xo_off` | K | `hakios.mpss.c` | `CONFIG_MODEM_XO_OFF` |  |
 | `soc_cmd_db` | K | `hakios.mpss.c` | `CONFIG_SOC_CMD_DB` |  |
 | `soc_gsi_base` | K | `hakios.ipa.c` | `CONFIG_SOC_GSI_BASE` |  |
 | `soc_imem` | K | `hakios.mpss.c` | `CONFIG_SOC_IMEM` |  |

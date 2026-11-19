@@ -24,13 +24,16 @@ Status: November 2026.
 | Buttons | Power, volume up, volume down (volume display, Control Center's volume slider) |
 | Sound | Both speakers, through the audio DSP (AudioReach) and the two AW88261 amplifiers: system sounds, music, video |
 | Wi-Fi | 2.4 and 5 GHz (up to 80 MHz), WPA2; scan and join from Settings, DHCP, DNS, Safari |
+| Cellular | With `modem=1 ufs=2`: the modem online, the SIM cards found, registered on LTE, signal bars in the status bar |
 | Battery | Level reading |
 | Copy and paste | the pasteboard daemon (pasted); drag and drop, the share sheet |
 | Files | the Files app with "On My iPhone" (kept in memory, like all of `/private/var`) |
 
 ## What does not work (yet)
 
-- Cellular, Bluetooth, camera, sensors, GPS.
+- Bluetooth, camera, sensors, GPS.
+- Cellular: no mobile data, no SMS, no calls; off unless asked for, and the phone has to be restarted after a
+  session with it ([docs/garnet/CELLULAR.md](docs/garnet/CELLULAR.md)).
 - Audio: no microphones, no headphones, no Bluetooth audio, no calls; the earpiece is not a route of its own.
 - Wi-Fi: no WPA3; channels 12-14 off; on 5 GHz a network shows only once its access point has been heard.
 - Graphics: Control Center at about 35-40 fps; 120 Hz not reached.
@@ -152,7 +155,7 @@ Every argument: [docs/boot-args.md](docs/boot-args.md).
 | `xnuloader/` | the UEFI loader that receives kernel and images over USB |
 | `devices/garnet/` | the phone: `device.conf` (what works), `configs/` (drivers and arguments), `soc/` (SM7435), `pull-firmware.sh`, UEFI platform |
 | `tools/` | build and image tools (`mk-ath10k.sh`, `garnet-wifi-image.sh`, `garnet-prebuilt.sh`, `garnet-root-apfs.sh`, `apfs/`, ...) |
-| `docs/garnet/` | this port's notes: [GPU](docs/garnet/GPU.md), [Wi-Fi](docs/garnet/WIFI.md), [sound](docs/garnet/AUDIO.md), [roadmap](docs/garnet/ROADMAP.md) |
+| `docs/garnet/` | this port's notes: [GPU](docs/garnet/GPU.md), [Wi-Fi](docs/garnet/WIFI.md), [sound](docs/garnet/AUDIO.md), [cellular](docs/garnet/CELLULAR.md), [roadmap](docs/garnet/ROADMAP.md) |
 | `docs/boot-args.md` | every boot argument, generated from the source |
 
 ## Changes over HakiOS

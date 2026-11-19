@@ -188,6 +188,7 @@ MIC_SECS	arg	mic_secs	Audio and battery	k	hakios.mic.c
 MIC_TAP	arg	mic_tap	Audio and battery	k	hakios.mic.c	
 MIC_TEST	arg	mic_test	Audio and battery	k	hakios.mic.c	
 MODEM_APN	arg	modem_apn	Cellular	k	hakios.mpss.c	a session to that APN instead of the default profile
+MODEM_DATA	arg	modem_data	Cellular	k	hakios.mpss.c	
 MODEM_DATA_NOBIND	arg	modem_data_nobind	Cellular	k	hakios.mpss.c	
 MODEM_DATA_OFF	arg	modem_data_off	Cellular	k	hakios.mpss.c	
 MODEM_DATA_WAIT	arg	modem_data_wait	Cellular	k	hakios.mpss.c	
@@ -201,6 +202,7 @@ MODEM_IPA_FW_AT	arg	modem_ipa_fw_at	Cellular	k	hakios.mpss.c
 MODEM_IPA_GSI_ENABLE	arg	modem_ipa_gsi_enable	Cellular	k	hakios.mpss.c	
 MODEM_IPA_ITEM	arg	modem_ipa_item	Cellular	k	hakios.mpss.c	
 MODEM_IPA_NO_PROBE	arg	modem_ipa_no_probe	Cellular	k	hakios.mpss.c	
+MODEM_IPA_QMI	arg	modem_ipa_qmi	Cellular	k	hakios.mpss.c	
 MODEM_IPA_QUIET	arg	modem_ipa_quiet	Cellular	k	hakios.mpss.c	
 MODEM_IPA_RAW	arg	modem_ipa_raw	Cellular	k	hakios.mpss.c	
 MODEM_IPA_ROUTES	arg	modem_ipa_routes	Cellular	k	hakios.mpss.c	
@@ -209,9 +211,8 @@ MODEM_IPA_SMMU_OFF	arg	modem_ipa_smmu_off	Cellular	k	hakios.mpss.c
 MODEM_KEEP	arg	modem_keep	Cellular	k	hakios.mpss.c	
 MODEM_LISTEN	arg	modem_listen	Cellular	k	hakios.mpss.c	
 MODEM_NAS_WAIT	arg	modem_nas_wait	Cellular	k	hakios.mpss.c	
+MODEM_NAV	arg	modem_nav	Cellular	k	hakios.mpss.c	
 MODEM_NEW	arg	modem_new	Cellular	k	hakios.mpss.c	
-MODEM_NO_IPA_QMI	arg	modem_no_ipa_qmi	Cellular	k	hakios.mpss.c	
-MODEM_NO_NAV	arg	modem_no_nav	Cellular	k	hakios.mpss.c	
 MODEM_NO_TFTP	arg	modem_no_tftp	Cellular	k	hakios.mpss.c	
 MODEM_ONLINE	arg	modem_online	Cellular	k	hakios.mpss.c	
 MODEM_PAUSE	arg	modem_pause	Cellular	k	hakios.mpss.c	
@@ -226,6 +227,8 @@ MODEM_SIM_SWITCH_OFF	arg	modem_sim_switch_off	Cellular	k	hakios.mpss.c
 MODEM_STEP	arg	modem_step	Cellular	k	hakios.mpss.c	the steps once the root is there, then back to the loader if modem_return=1 says so
 MODEM_WAIT	arg	modem_wait	Cellular	k	hakios.mpss.c	
 MODEM_WDA_OFF	arg	modem_wda_off	Cellular	k	hakios.mpss.c	
+MODEM_WHOLE_MEMORY	arg	modem_whole_memory	Cellular	k	hakios.mpss.c	
+MODEM_XO_OFF	arg	modem_xo_off	Cellular	k	hakios.mpss.c	
 PMIC_LIST	arg	pmic_list	Chip, thermal and PMIC	k	hakios.pmic.c	only the clock, not the inventory of every block
 PRESS_COUNT	arg	press_count	Touch and buttons	k	hakios.buttons.c	
 PRESS_KEY	arg	press_key	Touch and buttons	k	hakios.buttons.c	

@@ -75,7 +75,7 @@ hakios_nas_apply(struct hakios_nas_state *state, const void *frame, size_t lengt
 			next.registered = value[0] == 1;
 			next.bars = next.registered && next.has_signal ? bars_for(next.dbm) : 0;
 			serving = true;
-		} else if (message == 0x24 && type == 0x10 && size >= 5 && size >= (size_t)5 + value[4]) {
+		} else if (message == 0x24 && type == 0x12 && size >= 5 && size >= (size_t)5 + value[4]) {       /* (libqmi: 0x12, "Current PLMN") */
 			/* the current PLMN: MCC, MNC (16 bits each), the description's length and bytes */
 			unsigned n = value[4] < sizeof(next.operator_name) - 1 ? value[4] : sizeof(next.operator_name) - 1;
 
@@ -83,7 +83,9 @@ hakios_nas_apply(struct hakios_nas_state *state, const void *frame, size_t lengt
 			next.mnc = le16(value + 2);
 			memcpy(next.operator_name, value + 5, n);
 			next.operator_name[n] = 0;
-		} else if ((message == 0x4f || message == 0x51) && type == 0x17 && size >= 4) {
+		} else if ((message == 0x4f || message == 0x51) && type == 0x17 && size >= 4 &&
+		    (int16_t)le16(value) >= -150 && (int16_t)le16(value) <= -30) {
+			/* (5G: a phone on LTE sends the field too, with 0x8000 for "no reading", after the LTE one) */
 			level = (int16_t)le16(value); radio = 12; signal = true;
 		} else if ((message == 0x4f || message == 0x51) && type == 0x14 && size >= 6 && radio != 12) {
 			level = (int16_t)le16(value + 2); radio = 8; signal = true;

@@ -435,7 +435,8 @@ update_signal_item(id self, SEL sel, long item, void *data, id sim, void *getter
 		shown = 5;
 	}
 	if ((up > 0 || registered > 0) && shown > 0 && setter != NULL && data != NULL) {
-		BLOCK_CALL(setter, void (*)(void *, void *, int), data, shown);
+		/* (the setter takes the value alone: the block holds the data it writes into) */
+		BLOCK_CALL(setter, void (*)(void *, int), shown);
 		((void (*)(id, SEL, long, BOOL))objc_msgSend)(self, sel_registerName("_setItem:enabled:"), item, YES);
 		if (shown != cellular_last_bars) {
 			say("hakios: cellular: %d bars shown (item %ld; kernel bars %d, %d dBm, registered %d)\n", shown, item, bars, dbm, registered);
@@ -474,7 +475,7 @@ update_service_item(id self, SEL sel, long item, void *data, id sim, id other, v
 		CFStringRef string = CFStringCreateWithCString(NULL, name, kCFStringEncodingUTF8);
 
 		if (string != NULL) {
-			BLOCK_CALL(s1, void (*)(void *, void *, CFStringRef), data, string);
+			BLOCK_CALL(s1, void (*)(void *, CFStringRef), string);          /* (the value alone, as the bars' setter) */
 			((void (*)(id, SEL, long, BOOL))objc_msgSend)(self, sel_registerName("_setItem:enabled:"), item, YES);
 			if (strcmp(shown, name) != 0) {
 				snprintf(shown, sizeof(shown), "%s", name);

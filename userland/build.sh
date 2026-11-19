@@ -57,8 +57,8 @@
 #                                   kernel's adsp_step=N, drivers/audio/hakios.adsp.c, which runs before the root is
 #                                   mounted). Not beside GL=1: the two do not fit the 64 MB the loader takes with
 #                                   the kernel. adsp=1 needs none of it: the system image has the firmware in /fw.
-#                      MODEM=1      stage checked local MPSS firmware from ../fw-modem in system.apfs /fw.
-#                                   This does not start the modem; the XNU MPSS driver is still required.
+#                      MODEM=1      the modem's firmware, from ../fw-modem, has to be there (it goes into
+#                                   system.apfs /fw whenever it is; modem=1 on the kernel's line starts the modem).
 #   system.apfs      the system image, the root filesystem (the resident RAM disk, /dev/md0), an
 #                    APFS container: the part of Darwin userland 16.5 chosen by ../sysimage/select-system.py at
 #                    its real paths, the dyld shared cache, and src/stage0.c as /sbin/launchd (the
@@ -684,13 +684,13 @@ if [ -f $DARWIN/system.manifest ] && [ -f $CACHE/dyld_shared_cache_arm64 ] &&
 		mkdir -p sysroot/fw
 		cp ../fw-audio/adsp.mdt ../fw-audio/adsp.b[0-9][0-9] sysroot/fw/
 	fi
-	# MPSS firmware is much too large for the small boot image. Keep it in the system APFS,
-	# only when explicitly requested, after checking every loadable segment against this DTB.
-	# This stages the files; a separate XNU MPSS driver is still required to start the modem.
-	if [ -n "$MODEM" ]; then
-		[ -f ../fw-modem/modem.mdt ] || { echo "build.sh: MODEM=1 needs ../fw-modem/modem.mdt" >&2; exit 1; }
-		../devices/redwood/tools/modem_firmware.py --dtb ../devices/redwood/prebuilt/device-tree.dtb --firmware-dir ../fw-modem \
-			--node /soc/qcom,mss@4080000 >/dev/null
+	# The modem's firmware (110 MB) is much too large for the small boot image: it goes into the system image, when
+	# devices/garnet/pull-firmware.sh has put it into ../fw-modem (MODEM=1: its absence is an error). The kernel
+	# checks every segment against the image's own header before it loads it (drivers/modem/hakios.mpss.c, step 2).
+	if [ -n "$MODEM" ] && [ ! -f ../fw-modem/modem.mdt ]; then
+		echo "build.sh: MODEM=1 needs ../fw-modem/modem.mdt" >&2; exit 1
+	fi
+	if [ -f ../fw-modem/modem.mdt ]; then
 		mkdir -p sysroot/fw
 		cp ../fw-modem/modem.mdt ../fw-modem/modem.b[0-9][0-9] sysroot/fw/
 		# ... and the firmware partition's image/ (its mcfg configurations and the registry's *.jsn, pulled from

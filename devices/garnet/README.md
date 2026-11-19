@@ -33,7 +33,7 @@ The device folder of ios-garnet, kept in the tree (`devices/manifest.conf`: `pat
 | **Audio** | **Works** (speakers) | The audio DSP (AudioReach/GPR) plays what iOS plays through both AW88261 amplifiers; on by default with the phone's audio firmware. No microphones, headphones or calls. See `docs/garnet/AUDIO.md`. |
 | **Battery** | **Partial** | Battery level read through PMIC; in-kernel charging not implemented (phone discharges during session). |
 | **Wi-Fi** | **Works** | WCN3990-class radio on the WPSS DSP, Linux ath10k (snoc) in the kernel (`wifi=1`). Settings scans and joins 2.4 and 5 GHz WPA2 networks; DHCP and DNS. No WPA3. |
-| **Cellular** | **Missing** | MPSS/IPA modem currently in progress for Garnet. |
+| **Cellular** | **Partial** | With `modem=1 ufs=2` the modem goes online, finds the SIM cards and registers on LTE; signal bars in the status bar. No data (IPA 5.2 not driven), SMS or calls; restart the phone after such a session. See `docs/garnet/CELLULAR.md`. |
 
 ---
 
