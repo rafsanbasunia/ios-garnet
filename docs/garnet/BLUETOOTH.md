@@ -13,9 +13,12 @@ On (`bt=3`) with the phone's Bluetooth firmware in the image (`fw-bt/`, below).
 - Bluetooth LE through CoreBluetooth, as an application uses it: `cb_test` scans for a fitness band's service,
   finds the band, connects to it and lists its services.
 
-Not tried: a device found and paired in Settings (Bluetooth Classic), audio. The UART stays at 115200 baud, which
-is enough for commands and Bluetooth LE and not for audio. The phone has no name of its own in Settings
-("(null)"). A program that is not an application in the foreground is given what a scan finds only when it scans
+- Bluetooth Classic: a pair of earbuds in pairing mode is found in Settings, pairs (without a code) and is
+  listed as connected; the daemon connects its A2DP, AVRCP and hands-free profiles.
+
+Not done: sound. Nothing is played through a paired device yet: the UART stays at 115200 baud, which is enough
+for commands and Bluetooth LE and far too slow for audio, and the audio server's side of Bluetooth is not there
+(the daemon finds nobody to hand an audio device to). The phone has no name of its own in Settings ("(null)"). A program that is not an application in the foreground is given what a scan finds only when it scans
 for services, as on an iPhone: `cb_test 60 band FEE0`.
 
 ## The hardware
